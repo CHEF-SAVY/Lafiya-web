@@ -34,8 +34,8 @@ export function AccessSummary({
       ) : null}
       {pinSuccesses > 0 || pinFailures > 0 ? (
         <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-          Card PIN: {pinSuccesses} correct and {pinFailures} incorrect or
-          locked attempt{pinFailures === 1 ? "" : "s"} in the last 30 days.
+          Card PIN: {pinSuccesses} correct and {pinFailures} incorrect or locked
+          attempt{pinFailures === 1 ? "" : "s"} in the last 30 days.
           {lastPinFailureAt
             ? ` Last incorrect attempt: ${formatDateTime(lastPinFailureAt)}.`
             : ""}

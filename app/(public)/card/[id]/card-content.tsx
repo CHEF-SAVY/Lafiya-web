@@ -8,10 +8,7 @@ import type { EmergencyCardRow } from "@/lib/supabase/types";
 
 import { VerifiedBadge, type VerificationStatus } from "./verified-badge";
 
-function formatList(
-  values: string[] | null,
-  pinRequired = false,
-): string {
+function formatList(values: string[] | null, pinRequired = false): string {
   if (values === null) {
     return pinRequired ? "Requires the card PIN" : "Withheld by patient";
   }
