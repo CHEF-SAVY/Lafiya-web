@@ -14,6 +14,11 @@ import {
   digestCapability,
   EMERGENCY_FIELD_ALLOWLIST,
 } from "@/lib/emergency/capability";
+import {
+  generateCardPin,
+  hashCardPin,
+  PIN_GATEABLE_FIELDS,
+} from "@/lib/emergency/card-pin";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type { ProfileRow } from "@/lib/supabase/types";
@@ -41,6 +46,8 @@ export type CapabilityShareState = {
   error?: string;
   capabilityUrl?: string;
   expiresAt?: string;
+  /** Issue #631: shown once for printing; only its hash is stored. */
+  cardPin?: string;
 };
 
 /**
@@ -67,16 +74,36 @@ export async function createEmergencyCapability(
   const expiresAt = new Date(
     Date.now() + 179 * 24 * 60 * 60 * 1000,
   ).toISOString();
-  const { error } = await supabase.rpc("create_emergency_capability", {
-    p_token_digest: digestCapability(rawCapability),
-    p_purpose: "emergency",
-    p_field_allowlist: EMERGENCY_FIELD_ALLOWLIST,
-    p_expires_at: expiresAt,
-    p_max_views: null,
-  });
-  if (error) {
+  const { data: capability, error } = await supabase.rpc(
+    "create_emergency_capability",
+    {
+      p_token_digest: digestCapability(rawCapability),
+      p_purpose: "emergency",
+      p_field_allowlist: EMERGENCY_FIELD_ALLOWLIST,
+      p_expires_at: expiresAt,
+      p_max_views: null,
+    },
+  );
+  if (error || !capability) {
     logError("Failed to issue emergency capability", error, {
       route: "/profile (action: createEmergencyCapability)",
+    });
+    return { error: "Could not create a new emergency QR. Please try again." };
+  }
+
+  // Issue #631: a fresh printed PIN per card rotation. A card without its
+  // PIN would lock the patient's sensitive fields, so revoke it on failure.
+  const cardPin = generateCardPin();
+  const { error: pinError } = await createAdminClient().rpc("set_card_pin", {
+    p_capability_id: capability.id,
+    p_pin_hash: await hashCardPin(cardPin),
+  });
+  if (pinError) {
+    logError("Failed to store card PIN", pinError, {
+      route: "/profile (action: createEmergencyCapability)",
+    });
+    await supabase.rpc("revoke_emergency_capability", {
+      p_capability_id: capability.id,
     });
     return { error: "Could not create a new emergency QR. Please try again." };
   }
@@ -85,6 +112,7 @@ export async function createEmergencyCapability(
   return {
     capabilityUrl: `${await getBaseUrl()}/card/c/${rawCapability}`,
     expiresAt,
+    cardPin,
   };
 }
 
@@ -371,7 +399,16 @@ export async function updateDisclosureChoices(
       formData.get(`field:${field}`) === "on";
   }
   fields.date_of_birth = false; // only derived age may ever be public
-  const policy: DisclosurePolicy = { version: 1, fields };
+  const requiresCardPin = PIN_GATEABLE_FIELDS.filter(
+    (field) => formData.get(`pin:${field}`) === "on",
+  );
+  const policy: DisclosurePolicy = {
+    version: 1,
+    fields,
+    ...(requiresCardPin.length > 0
+      ? { requires_card_pin: requiresCardPin }
+      : {}),
+  };
   const { error } = await supabase.rpc("update_disclosure_policy", {
     p_expected_revision_id: expected,
     p_disclosure_policy: policy,

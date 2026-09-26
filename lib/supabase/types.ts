@@ -73,18 +73,31 @@ export type EmergencyCapabilityRow = {
   created_at: string;
 };
 
+/** Issue #631: Argon2id hash of a capability's printed card PIN. */
+export type EmergencyCapabilityPinRow = {
+  capability_id: string;
+  pin_hash: string;
+  failed_attempts: number;
+  locked_at: string | null;
+  unlock_digest: string | null;
+  unlock_expires_at: string | null;
+  created_at: string;
+};
+
 export type CardAccessEventRow = {
   id: string;
   user_id: string;
   capability_id: string | null;
   access_kind: "legacy" | "capability";
-  outcome: "served" | "inactive";
+  outcome: "served" | "inactive" | "pin_success" | "pin_failure" | "pin_locked";
   observed_at: string;
 };
 
 export type DisclosurePolicy = {
   version: 1;
   fields: Record<string, boolean>;
+  /** Issue #631: fields that require the printed card PIN. */
+  requires_card_pin?: string[];
 };
 
 export type RecordLifecycleState =
@@ -353,7 +366,7 @@ export type EmergencyCardRow = {
   chronic_conditions: string[] | null;
   emergency_contacts: EmergencyContact[] | null;
   language: string | null;
-  disclosure_states: Record<string, "disclosed" | "withheld">;
+  disclosure_states: Record<string, "disclosed" | "withheld" | "pin_required">;
   schema_version: number;
   offline_cache_allowed: boolean;
   trust_state: TrustDecisionRow["state"];
@@ -674,6 +687,13 @@ export type Database = {
         Update: Partial<AttestationContractTrustStateRow>;
         Relationships: [];
       };
+      emergency_capability_pins: {
+        Row: EmergencyCapabilityPinRow;
+        Insert: Pick<EmergencyCapabilityPinRow, "capability_id" | "pin_hash"> &
+          Partial<EmergencyCapabilityPinRow>;
+        Update: Partial<Omit<EmergencyCapabilityPinRow, "capability_id">>;
+        Relationships: [];
+      };
       protocol_quarantine: {
         Row: ProtocolQuarantineRow;
         Insert: Pick<
@@ -726,9 +746,55 @@ export type Database = {
         Args: {
           p_capability_id: string;
           p_access_kind: "legacy" | "capability";
-          p_outcome: "served" | "inactive";
+          p_outcome:
+            | "served"
+            | "inactive"
+            | "pin_success"
+            | "pin_failure"
+            | "pin_locked";
         };
         Returns: undefined;
+      };
+      get_card_pin_gate: {
+        Args: { p_capability_id: string; p_unlock_digest: string };
+        Returns: {
+          gated_fields: string[];
+          has_pin: boolean;
+          locked: boolean;
+          unlocked: boolean;
+        }[];
+      };
+      get_legacy_card_pin_gated_fields: {
+        Args: { p_card_id: string };
+        Returns: string[];
+      };
+      set_card_pin: {
+        Args: { p_capability_id: string; p_pin_hash: string };
+        Returns: undefined;
+      };
+      begin_card_pin_attempt: {
+        Args: { p_token_digest: string };
+        Returns: {
+          capability_id: string;
+          pin_hash: string | null;
+          allowed: boolean;
+        }[];
+      };
+      complete_card_pin_success: {
+        Args: {
+          p_capability_id: string;
+          p_unlock_digest: string;
+          p_unlock_expires_at: string;
+        };
+        Returns: undefined;
+      };
+      get_my_card_pin_access_summary: {
+        Args: Record<string, never>;
+        Returns: {
+          pin_successes_30d: number;
+          pin_failures_30d: number;
+          last_pin_failure_at: string | null;
+        }[];
       };
       record_legacy_card_access_event: {
         Args: { p_card_id: string };

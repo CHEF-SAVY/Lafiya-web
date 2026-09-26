@@ -11,6 +11,15 @@ vi.mock("next/navigation", () => ({
   },
 }));
 vi.mock("next/server", () => ({ after: vi.fn() }));
+vi.mock("@/lib/emergency/card-pin-gate", () => ({
+  getCapabilityPinGate: vi.fn().mockResolvedValue({
+    withheld: [],
+    canUnlock: false,
+    locked: false,
+    unlocked: false,
+  }),
+  getLegacyPinGatedFields: vi.fn().mockResolvedValue([]),
+}));
 vi.mock("@/lib/stellar/verification-indexer/trust-state", () => ({
   isAttestationTrustDegraded: vi.fn().mockResolvedValue(false),
 }));

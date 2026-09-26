@@ -140,6 +140,9 @@ export default async function ProfilePage() {
   const { data: accessSummary } = await supabase.rpc(
     "get_my_card_access_summary",
   );
+  const { data: pinAccessSummary } = await supabase.rpc(
+    "get_my_card_pin_access_summary",
+  );
   const { data: recentRevisions } = profile
     ? await supabase
         .from("record_revisions")
@@ -214,12 +217,33 @@ export default async function ProfilePage() {
       ) : null}
 
       {profile ? (
-        <CapabilitySharePanel activeCapabilities={activeCapabilities ?? []} />
+        <CapabilitySharePanel
+          activeCapabilities={activeCapabilities ?? []}
+          printableCard={
+            profile
+              ? {
+                  name: profile.name,
+                  age: null,
+                  blood_group: profile.blood_group,
+                  genotype: profile.genotype,
+                  allergies: profile.allergies,
+                  medications: profile.medications,
+                  chronic_conditions: profile.chronic_conditions,
+                  emergency_contacts: profile.emergency_contacts,
+                  language: profile.language,
+                  record_updated_at: profile.updated_at,
+                }
+              : undefined
+          }
+        />
       ) : null}
 
       <AccessSummary
         viewsLast30Days={accessSummary?.[0]?.views_last_30_days ?? 0}
         lastViewedAt={accessSummary?.[0]?.last_viewed_at ?? null}
+        pinSuccesses={pinAccessSummary?.[0]?.pin_successes_30d ?? 0}
+        pinFailures={pinAccessSummary?.[0]?.pin_failures_30d ?? 0}
+        lastPinFailureAt={pinAccessSummary?.[0]?.last_pin_failure_at ?? null}
       />
 
       {stale ? (

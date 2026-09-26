@@ -6,6 +6,8 @@ import {
   digestCapability,
   isCapabilityToken,
 } from "@/lib/emergency/capability";
+import { withholdPinGatedFields } from "@/lib/emergency/card-pin";
+import { getCapabilityPinGate } from "@/lib/emergency/card-pin-gate";
 import { logError } from "@/lib/logging/logger";
 import { isAttestationTrustDegraded } from "@/lib/stellar/verification-indexer/trust-state";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -13,6 +15,7 @@ import { createClient } from "@/lib/supabase/server";
 
 import { EmergencyCardContent } from "../../[id]/card-content";
 import { ExpiredCapabilityState } from "./expired-state";
+import { CardPinForm } from "./pin-form";
 
 /**
  * ROUTE: /card/c/[token]
@@ -60,10 +63,13 @@ export const metadata: Metadata = {
 
 export default async function CapabilityCardPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ token: string }>;
+  searchParams?: Promise<{ pin?: string | string[] }>;
 }) {
   const { token } = await params;
+  const pinStatus = (await searchParams)?.pin;
   if (!isCapabilityToken(token)) notFound();
 
   const supabase = await createClient();
@@ -127,15 +133,34 @@ export default async function CapabilityCardPage({
     }
   });
 
-  // Issue #629: an unapproved contract upgrade degrades the badge to
-  // "verification unavailable" (the "unavailable" trust state) instead of trusting it.
+  // Issue #629: an unapproved contract upgrade degrades the badge to the
+  // "unavailable" trust state instead of trusting it.
   const trustDegraded = await isAttestationTrustDegraded();
+  // Issue #631: sensitive fields render only after a valid card PIN. An
+  // unlocked view is never cached offline, so the device keeps no copy of
+  // the PIN-protected fields.
+  const pinGate = await getCapabilityPinGate(capabilityId);
+  const gatedCard = pinGate.unlocked
+    ? { ...card, offline_cache_allowed: false }
+    : withholdPinGatedFields(card, pinGate.withheld);
   return (
     <EmergencyCardContent
       card={
-        trustDegraded ? { ...card, trust_state: "unavailable" as const } : card
+        trustDegraded
+          ? { ...gatedCard, trust_state: "unavailable" as const }
+          : gatedCard
       }
       authorizationKind="capability"
+      pinGate={
+        pinGate.withheld.length > 0 ? (
+          <CardPinForm
+            token={token}
+            status={typeof pinStatus === "string" ? pinStatus : undefined}
+            canUnlock={pinGate.canUnlock}
+            locked={pinGate.locked}
+          />
+        ) : null
+      }
     />
   );
 }
