@@ -7,6 +7,7 @@ import {
   isCapabilityToken,
 } from "@/lib/emergency/capability";
 import { logError } from "@/lib/logging/logger";
+import { isAttestationTrustDegraded } from "@/lib/stellar/verification-indexer/trust-state";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
@@ -126,5 +127,15 @@ export default async function CapabilityCardPage({
     }
   });
 
-  return <EmergencyCardContent card={card} authorizationKind="capability" />;
+  // Issue #629: an unapproved contract upgrade degrades the badge to
+  // "verification unavailable" (the "unavailable" trust state) instead of trusting it.
+  const trustDegraded = await isAttestationTrustDegraded();
+  return (
+    <EmergencyCardContent
+      card={
+        trustDegraded ? { ...card, trust_state: "unavailable" as const } : card
+      }
+      authorizationKind="capability"
+    />
+  );
 }

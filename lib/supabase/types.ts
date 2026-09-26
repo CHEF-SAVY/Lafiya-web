@@ -297,10 +297,36 @@ export type PayoutSettlementRow = {
 };
 
 export type ProtocolIndexerCheckpointRow = {
-  stream: "attestations" | "payments";
+  stream: "attestations" | "payments" | "contract_admin";
   cursor: string;
   ledger_sequence: number | null;
   ledger_hash: string | null;
+  updated_at: string;
+};
+
+export type AttestationContractAdminEventRow = {
+  event_id: string;
+  kind:
+    | "wasm_upgrade"
+    | "admin_transfer"
+    | "allowlist_change"
+    | "pause"
+    | "unpause";
+  contract_id: string;
+  ledger_sequence: number;
+  transaction_hash: string;
+  wasm_hash: string | null;
+  subject: string | null;
+  action: "added" | "removed" | null;
+  observed_at: string;
+  indexed_at: string;
+};
+
+export type AttestationContractTrustStateRow = {
+  singleton: boolean;
+  state: "trusted" | "needs_review" | "paused";
+  wasm_hash: string | null;
+  reason_code: string | null;
   updated_at: string;
 };
 
@@ -632,6 +658,20 @@ export type Database = {
         Insert: Pick<ProtocolIndexerCheckpointRow, "stream" | "cursor"> &
           Partial<ProtocolIndexerCheckpointRow>;
         Update: Partial<Omit<ProtocolIndexerCheckpointRow, "stream">>;
+        Relationships: [];
+      };
+      attestation_contract_admin_events: {
+        Row: AttestationContractAdminEventRow;
+        Insert: Omit<AttestationContractAdminEventRow, "indexed_at"> &
+          Partial<Pick<AttestationContractAdminEventRow, "indexed_at">>;
+        Update: Partial<AttestationContractAdminEventRow>;
+        Relationships: [];
+      };
+      attestation_contract_trust_state: {
+        Row: AttestationContractTrustStateRow;
+        Insert: Pick<AttestationContractTrustStateRow, "state"> &
+          Partial<AttestationContractTrustStateRow>;
+        Update: Partial<AttestationContractTrustStateRow>;
         Relationships: [];
       };
       protocol_quarantine: {

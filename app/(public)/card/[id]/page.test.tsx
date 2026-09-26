@@ -11,6 +11,9 @@ vi.mock("next/navigation", () => ({
   },
 }));
 vi.mock("next/server", () => ({ after: vi.fn() }));
+vi.mock("@/lib/stellar/verification-indexer/trust-state", () => ({
+  isAttestationTrustDegraded: vi.fn().mockResolvedValue(false),
+}));
 
 import { createClient } from "@/lib/supabase/server";
 import { after } from "next/server";

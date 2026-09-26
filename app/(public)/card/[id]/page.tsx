@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { after } from "next/server";
 
 import { logError } from "@/lib/logging/logger";
+import { isAttestationTrustDegraded } from "@/lib/stellar/verification-indexer/trust-state";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { EmergencyCardContent } from "./card-content";
@@ -134,7 +135,11 @@ export default async function PublicCardPage({
         </a>
       </header>
       <EmergencyCardContent
-        card={data[0]}
+        card={
+          (await isAttestationTrustDegraded())
+            ? { ...data[0], trust_state: "unavailable" as const }
+            : data[0]
+        }
         authorizationKind="legacy"
         isOwner={isOwner}
       />
