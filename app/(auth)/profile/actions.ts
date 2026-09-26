@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { createHash } from "node:crypto";
 
 import { deleteAccountAndData } from "@/lib/account/deleteAccount";
+import { syncBlockingKeys } from "@/lib/account/duplicates";
 import {
   ensureRecordSecret,
   secretExistsByUserId,
@@ -31,6 +32,7 @@ import {
   normalizeEmergencyRecord,
 } from "@/lib/records/canonicalization";
 
+import { serverEnv } from "@/lib/env-server";
 import { logError } from "@/lib/logging/logger";
 import { getBaseUrl } from "@/lib/url/getBaseUrl";
 
@@ -562,6 +564,27 @@ export async function upsertProfile(
       code: "DATABASE",
       error: "Your record could not be saved. Please try again.",
     };
+  }
+
+  // Issue #628: refresh keyed duplicate-detection blocking keys. Best effort:
+  // a failure must never block saving emergency information.
+  if (serverEnv.ACCOUNT_LINKAGE_HMAC_SECRET) {
+    try {
+      await syncBlockingKeys(
+        createAdminClient(),
+        serverEnv.ACCOUNT_LINKAGE_HMAC_SECRET,
+        user.id,
+        {
+          phone: user.phone,
+          name: parsed.data.name,
+          dateOfBirth: parsed.data.dateOfBirth || null,
+        },
+      );
+    } catch (keyError) {
+      logError("Failed to sync duplicate-detection keys", keyError, {
+        route: "/profile (action: upsertProfile)",
+      });
+    }
   }
 
   const { data: updatedProfile } = await supabase

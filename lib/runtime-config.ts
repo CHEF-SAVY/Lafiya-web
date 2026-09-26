@@ -50,6 +50,11 @@ const rawServerEnvSchema = z.object({
     .max(3600)
     .optional(),
   ATTESTATION_APPROVED_WASM_HASHES: optionalString,
+  ACCOUNT_LINKAGE_HMAC_SECRET: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    z.string().min(32).optional(),
+  ),
   CHW_PROTOCOL_EPOCH_ID: optionalString,
   CHW_PROTOCOL_INTENT_SIGNING_KEY: optionalString,
   PAYOUT_INDEXER_ENABLED: booleanStringSchema.default(false),
@@ -154,6 +159,7 @@ export function getRuntimeConfig(
     ATTESTATION_CONTRACT_ID: env.ATTESTATION_CONTRACT_ID,
     ATTESTATION_CACHE_TTL_SECONDS: env.ATTESTATION_CACHE_TTL_SECONDS,
     ATTESTATION_APPROVED_WASM_HASHES: env.ATTESTATION_APPROVED_WASM_HASHES,
+    ACCOUNT_LINKAGE_HMAC_SECRET: env.ACCOUNT_LINKAGE_HMAC_SECRET,
     CHW_PROTOCOL_EPOCH_ID: env.CHW_PROTOCOL_EPOCH_ID,
     CHW_PROTOCOL_INTENT_SIGNING_KEY: env.CHW_PROTOCOL_INTENT_SIGNING_KEY,
     PAYOUT_INDEXER_ENABLED: env.PAYOUT_INDEXER_ENABLED,

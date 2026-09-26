@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 import { computeRecordHash } from "@/lib/attestation/recordHash";
 import { getSecretByUserId } from "@/lib/attestation/recordSecret";
@@ -189,8 +190,8 @@ export default async function ProfilePage() {
             legacySunsetAt={profile.legacy_card_sunset_at}
           />
           <p className="text-xs text-zinc-500 dark:text-zinc-500">
-            Preview shows your last-saved public card. Unsaved draft changes
-            are not reflected until you save.
+            Preview shows your last-saved public card. Unsaved draft changes are
+            not reflected until you save.
           </p>
           <div className="flex flex-wrap gap-3">
             <PreviewCardButton
@@ -273,6 +274,12 @@ export default async function ProfilePage() {
         <h2 className="text-sm font-medium text-red-600 dark:text-red-400">
           Danger zone
         </h2>
+        <Link
+          href="/profile/merge"
+          className="text-sm text-zinc-700 underline dark:text-zinc-300"
+        >
+          Have a duplicate account? Merge it into this one
+        </Link>
         <DeleteAccountButton />
       </div>
     </div>

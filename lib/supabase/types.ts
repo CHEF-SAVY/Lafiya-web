@@ -73,6 +73,44 @@ export type EmergencyCapabilityRow = {
   created_at: string;
 };
 
+/** Issue #628: HMAC-keyed duplicate-detection blocking key. */
+export type PatientBlockingKeyRow = {
+  user_id: string;
+  key_type: "phone" | "name_dob";
+  key_hash: string;
+  updated_at: string;
+};
+
+export type AccountMergeRequestRow = {
+  id: string;
+  requester_user_id: string;
+  other_user_id: string | null;
+  status: "pending" | "verified" | "merged" | "cancelled";
+  requester_verified_at: string | null;
+  other_verified_at: string | null;
+  expires_at: string;
+  created_at: string;
+};
+
+export type AccountMergeAuditRow = {
+  id: string;
+  merge_request_id: string;
+  survivor_user_id: string;
+  loser_user_id: string;
+  moved: Record<string, number>;
+  adjusted_obligations: number;
+  merged_at: string;
+};
+
+export type AccountNotificationOutboxRow = {
+  id: string;
+  user_id: string;
+  template: "account_merged_survivor" | "account_merged_loser";
+  reference_id: string;
+  created_at: string;
+  sent_at: string | null;
+};
+
 /** Issue #631: Argon2id hash of a capability's printed card PIN. */
 export type EmergencyCapabilityPinRow = {
   capability_id: string;
@@ -687,6 +725,40 @@ export type Database = {
         Update: Partial<AttestationContractTrustStateRow>;
         Relationships: [];
       };
+      patient_blocking_keys: {
+        Row: PatientBlockingKeyRow;
+        Insert: Omit<PatientBlockingKeyRow, "updated_at"> &
+          Partial<Pick<PatientBlockingKeyRow, "updated_at">>;
+        Update: Partial<PatientBlockingKeyRow>;
+        Relationships: [];
+      };
+      account_merge_requests: {
+        Row: AccountMergeRequestRow;
+        Insert: Pick<
+          AccountMergeRequestRow,
+          "requester_user_id" | "other_user_id" | "expires_at"
+        > &
+          Partial<AccountMergeRequestRow>;
+        Update: Partial<
+          Pick<
+            AccountMergeRequestRow,
+            "status" | "requester_verified_at" | "other_verified_at"
+          >
+        >;
+        Relationships: [];
+      };
+      account_merge_audit: {
+        Row: AccountMergeAuditRow;
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      account_notification_outbox: {
+        Row: AccountNotificationOutboxRow;
+        Insert: never;
+        Update: Partial<Pick<AccountNotificationOutboxRow, "sent_at">>;
+        Relationships: [];
+      };
       emergency_capability_pins: {
         Row: EmergencyCapabilityPinRow;
         Insert: Pick<EmergencyCapabilityPinRow, "capability_id" | "pin_hash"> &
@@ -754,6 +826,26 @@ export type Database = {
             | "pin_locked";
         };
         Returns: undefined;
+      };
+      find_user_id_by_email: {
+        Args: { p_email: string };
+        Returns: string | null;
+      };
+      count_duplicate_candidates: {
+        Args: { p_user_id: string };
+        Returns: number;
+      };
+      accounts_share_blocking_key: {
+        Args: { p_a: string; p_b: string };
+        Returns: boolean;
+      };
+      recompute_patient_payout_eligibility: {
+        Args: { p_user_id: string };
+        Returns: number;
+      };
+      merge_patient_accounts: {
+        Args: { p_merge_request_id: string; p_survivor_user_id: string };
+        Returns: AccountMergeAuditRow;
       };
       get_card_pin_gate: {
         Args: { p_capability_id: string; p_unlock_digest: string };
