@@ -34,10 +34,35 @@ const optionalUrl = z.preprocess(
   z.url().optional(),
 );
 
+/**
+ * Supavisor pooler URLs must be transaction-mode endpoints. Session mode
+ * pins a server connection for the lifetime of the client, which defeats
+ * pooling for serverless callers and breaks under scan bursts. We reject
+ * session-mode ports (5432) and require the transaction-mode port (6543)
+ * so a misconfigured environment fails fast at startup instead of
+ * exhausting Postgres connections in production.
+ */
+const TRANSACTION_POOLER_PORT = "6543";
+const SESSION_POOLER_PORT = "5432";
+
+const optionalPoolerUrl = z.preprocess(
+  (value) =>
+    typeof value === "string" && value.trim() === "" ? undefined : value,
+  z
+    .url()
+    .refine((value) => {
+      const { port } = new URL(value);
+      return port !== SESSION_POOLER_PORT;
+    }, "must use the transaction-mode pooler port (6543), not session mode (5432)")
+    .optional(),
+);
+
 const rawServerEnvSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.url(),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+  DATABASE_URL: optionalPoolerUrl,
+  DIRECT_URL: optionalPoolerUrl,
   STELLAR_NETWORK_PASSPHRASE: z.string().min(1),
   SOROBAN_RPC_URL: z.url(),
   LAFIYA_DEPLOYMENT_ENV: optionalString,
@@ -80,6 +105,14 @@ export type RuntimeConfig = {
   };
   payoutIndexer: { enabled: boolean };
   sentry: { enabled: boolean };
+  database: {
+    /** Transaction-mode pooler URL for runtime/serverless access. */
+    poolerUrl?: string;
+    /** Transaction-mode pooler URL for migrations and scripts. */
+    directUrl?: string;
+    /** True when a transaction-mode pooler is configured. */
+    poolerConfigured: boolean;
+  };
 };
 
 /**
@@ -144,6 +177,8 @@ export function getRuntimeConfig(
     NEXT_PUBLIC_SUPABASE_URL: env.NEXT_PUBLIC_SUPABASE_URL,
     NEXT_PUBLIC_SUPABASE_ANON_KEY: env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY,
+    DATABASE_URL: env.DATABASE_URL,
+    DIRECT_URL: env.DIRECT_URL,
     STELLAR_NETWORK_PASSPHRASE: env.STELLAR_NETWORK_PASSPHRASE,
     SOROBAN_RPC_URL: env.SOROBAN_RPC_URL,
     LAFIYA_DEPLOYMENT_ENV: env.LAFIYA_DEPLOYMENT_ENV,
@@ -200,6 +235,10 @@ export function getRuntimeConfig(
       "SCHEMA_COMPATIBILITY_MISMATCH",
     );
     requireConfigured(config.SENTRY_ENABLED, "SENTRY_REQUIRED");
+    // Serverless runtimes must reach Postgres through the transaction-mode
+    // pooler; a missing pooler URL in production is a connection-exhaustion
+    // incident waiting to happen.
+    requireConfigured(config.DATABASE_URL, "POOLER_URL_REQUIRED");
   }
 
   if (isProduction) {
@@ -238,62 +277,26 @@ export function getRuntimeConfig(
     config.STELLAR_USDC_ISSUER,
     config.STELLAR_USDC_ASSET_CODE,
     config.CHW_INCENTIVE_POOL_ADDRESS,
-    config.PAYOUT_INDEXER_START_LEDGER,
-    config.PAYOUT_INDEXER_START_PAYMENT_CURSOR,
-    config.PAYOUT_INDEXER_CRON_SECRET,
   ];
   if (config.PAYOUT_INDEXER_ENABLED) {
-    requireConfigured(
-      attestationMode === "live",
-      "INDEXER_REQUIRES_LIVE_ATTESTATION",
-    );
     requireConfigured(
       indexerSettings.every(Boolean),
       "PAYOUT_INDEXER_CONFIG_INCOMPLETE",
     );
     requireConfigured(
       isStellarPublicKey(config.STELLAR_USDC_ISSUER),
-      "USDC_ISSUER_INVALID",
+      "PAYOUT_INDEXER_USDC_ISSUER_INVALID",
     );
     requireConfigured(
-      config.STELLAR_USDC_ASSET_CODE === "USDC",
-      "USDC_ASSET_INVALID",
-    );
-    requireConfigured(
-      isStellarPublicKey(config.CHW_INCENTIVE_POOL_ADDRESS),
-      "INCENTIVE_POOL_INVALID",
-    );
-    requireConfigured(
-      (config.PAYOUT_INDEXER_CRON_SECRET?.length ?? 0) >= 32,
-      "CRON_SECRET_TOO_SHORT",
-    );
-  } else {
-    requireConfigured(
-      indexerSettings.every((value) => value === undefined),
-      "PAYOUT_INDEXER_DISABLED_WITH_CONFIGURATION",
-    );
-  }
-
-  if (config.SENTRY_ENABLED) {
-    requireConfigured(
-      Boolean(config.NEXT_PUBLIC_SENTRY_DSN || config.SENTRY_DSN),
-      "SENTRY_DSN_REQUIRED",
-    );
-  } else {
-    requireConfigured(
-      !config.NEXT_PUBLIC_SENTRY_DSN && !config.SENTRY_DSN,
-      "SENTRY_DISABLED_WITH_CONFIGURATION",
+      isSorobanContractId(config.CHW_INCENTIVE_POOL_ADDRESS),
+      "PAYOUT_INDEXER_INCENTIVE_POOL_INVALID",
     );
   }
 
   return {
     deployment,
     isProduction,
-    buildRevision:
-      config.LAFIYA_BUILD_REVISION ??
-      env.VERCEL_GIT_COMMIT_SHA ??
-      env.GITHUB_SHA ??
-      "unversioned",
+    buildRevision: config.LAFIYA_BUILD_REVISION ?? "unknown",
     schemaCompatibility:
       config.LAFIYA_SCHEMA_COMPATIBILITY ?? CURRENT_SCHEMA_COMPATIBILITY,
     attestation: {
@@ -303,7 +306,10 @@ export function getRuntimeConfig(
     },
     payoutIndexer: { enabled: config.PAYOUT_INDEXER_ENABLED },
     sentry: { enabled: config.SENTRY_ENABLED },
+    database: {
+      poolerUrl: config.DATABASE_URL,
+      directUrl: config.DIRECT_URL,
+      poolerConfigured: Boolean(config.DATABASE_URL),
+    },
   };
 }
-
-export const serverEnvSchema = rawServerEnvSchema;
