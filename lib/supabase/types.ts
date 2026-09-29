@@ -52,6 +52,12 @@ export type ProfileRow = {
   current_revision_id: string | null;
   disclosure_policy: DisclosurePolicy;
   legacy_card_sunset_at: string;
+  /**
+   * Fields the patient marked clinician-only (issue #543 break-glass).
+   * Never exposed via get_emergency_card() or consume_emergency_capability()
+   * — only through open_break_glass_access() to a verified clinician.
+   */
+  clinician_disclosure_policy: DisclosurePolicy;
 };
 
 export type EmergencyCapabilityPurpose = "emergency" | "temporary";
@@ -94,6 +100,19 @@ export type EmergencyContactNotificationEventRow = {
 export type DisclosurePolicy = {
   version: 1;
   fields: Record<string, boolean>;
+};
+
+/** Row shape of public.break_glass_accesses (issue #543). Immutable audit trail. */
+export type BreakGlassAccessRow = {
+  id: string;
+  patient_user_id: string;
+  clinician_id: string;
+  revision_id: string;
+  reason: string;
+  fields_disclosed: Record<string, boolean>;
+  opened_at: string;
+  expires_at: string;
+  patient_notified_at: string | null;
 };
 
 export type RecordLifecycleState =
@@ -661,6 +680,21 @@ export type Database = {
         Update: Partial<Omit<ProtocolQuarantineRow, "id">>;
         Relationships: [];
       };
+      break_glass_accesses: {
+        Row: BreakGlassAccessRow;
+        Insert: Pick<
+          BreakGlassAccessRow,
+          | "patient_user_id"
+          | "clinician_id"
+          | "revision_id"
+          | "reason"
+          | "fields_disclosed"
+          | "expires_at"
+        > &
+          Partial<BreakGlassAccessRow>;
+        Update: Partial<Omit<BreakGlassAccessRow, "id">>;
+        Relationships: [];
+      };
     };
     Views: {
       payout_obligation_reconciliation: {
@@ -763,6 +797,35 @@ export type Database = {
       request_revision_verification: {
         Args: { p_expected_revision_id: string };
         Returns: ReattestationRequestRow;
+      };
+      update_clinician_disclosure_policy: {
+        Args: {
+          p_expected_revision_id: string;
+          p_clinician_disclosure_policy: DisclosurePolicy;
+        };
+        Returns: ProfileRow;
+      };
+      open_break_glass_access: {
+        Args: { p_patient_user_id: string; p_reason: string };
+        Returns: {
+          access_id: string;
+          expires_at: string;
+          name: string | null;
+          age: number | null;
+          photo_url: string | null;
+          blood_group: BloodGroup | null;
+          genotype: Genotype | null;
+          allergies: string[] | null;
+          medications: string[] | null;
+          chronic_conditions: string[] | null;
+          emergency_contacts: EmergencyContact[] | null;
+          language: string | null;
+          fields_disclosed: Record<string, boolean>;
+        }[];
+      };
+      mark_break_glass_patient_notified: {
+        Args: { p_access_id: string };
+        Returns: undefined;
       };
       rate_limit_record_failure: {
         Args: { p_key: string };
