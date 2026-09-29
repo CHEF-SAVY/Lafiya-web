@@ -10,6 +10,7 @@ import {
 } from "./actions";
 import { CopyLinkButton } from "./copy-link-button";
 import { NfcWriteButton } from "./nfc-write-button";
+import { WalletPassButtons } from "./wallet-pass-buttons";
 
 function formatDate(value: string | undefined): string {
   if (!value) return "";
@@ -211,6 +212,7 @@ export function CapabilitySharePanel({
           <p className="max-w-full text-xs break-all text-zinc-400 dark:text-zinc-500">
             {state.capabilityUrl}
           </p>
+          <WalletPassButtons capabilityUrl={state.capabilityUrl} />
           <div className="flex flex-wrap justify-center gap-3">
             <CopyLinkButton text={state.capabilityUrl} />
             <NfcWriteButton
