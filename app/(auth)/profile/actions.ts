@@ -337,6 +337,7 @@ export async function recordConsentChoice(formData: FormData): Promise<void> {
     "offline_caching",
     "clinical_verification",
     "optional_analytics",
+    "emergency_contact_notification",
   ];
   if (!allowed.includes(purpose)) throw new Error("INVALID_CONSENT_PURPOSE");
   const { error } = await supabase.rpc("record_consent", {

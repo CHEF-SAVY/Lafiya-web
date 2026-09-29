@@ -82,6 +82,15 @@ export type CardAccessEventRow = {
   observed_at: string;
 };
 
+/** Row shape of public.emergency_contact_notification_events. See Issue #542. */
+export type EmergencyContactNotificationEventRow = {
+  id: string;
+  user_id: string;
+  capability_id: string | null;
+  facility_name: string | null;
+  sent_at: string;
+};
+
 export type DisclosurePolicy = {
   version: 1;
   fields: Record<string, boolean>;
@@ -118,7 +127,8 @@ export type ConsentPurpose =
   | "emergency_public_disclosure"
   | "offline_caching"
   | "clinical_verification"
-  | "optional_analytics";
+  | "optional_analytics"
+  | "emergency_contact_notification";
 
 /** Row shape of public.consent_purposes. */
 export type ConsentPurposeRow = {
@@ -513,6 +523,13 @@ export type Database = {
         Update: never;
         Relationships: [];
       };
+      emergency_contact_notification_events: {
+        Row: EmergencyContactNotificationEventRow;
+        Insert: Pick<EmergencyContactNotificationEventRow, "user_id"> &
+          Partial<EmergencyContactNotificationEventRow>;
+        Update: never;
+        Relationships: [];
+      };
       frequency_limits: {
         Row: FrequencyLimitRow;
         Insert: Pick<FrequencyLimitRow, "key"> & Partial<FrequencyLimitRow>;
@@ -699,6 +716,22 @@ export type Database = {
         Returns: {
           views_last_30_days: number;
           last_viewed_at: string | null;
+        }[];
+      };
+      notify_emergency_contacts: {
+        Args: { p_token_digest: string; p_facility_name?: string | null };
+        Returns: {
+          allowed: boolean;
+          reason: string;
+          contacts: EmergencyContact[] | null;
+          patient_first_name: string | null;
+        }[];
+      };
+      get_my_emergency_contact_notification_summary: {
+        Args: Record<string, never>;
+        Returns: {
+          notifications_last_30_days: number;
+          last_sent_at: string | null;
         }[];
       };
       save_record_revision: {

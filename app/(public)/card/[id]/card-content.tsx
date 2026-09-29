@@ -6,6 +6,7 @@ import { formatDateTime } from "@/lib/format/datetime";
 import { OfflineEnvelopeSource } from "@/lib/emergency/offline-source";
 import type { EmergencyCardRow } from "@/lib/supabase/types";
 
+import { NotifyContactsForm } from "../c/[token]/notify-contacts-form";
 import { VerifiedBadge, type VerificationStatus } from "./verified-badge";
 
 function formatList(values: string[] | null): string {
@@ -78,6 +79,7 @@ export function EmergencyCardContent({
   card,
   authorizationKind,
   isOwner = false,
+  capabilityToken,
 }: {
   card: EmergencyCardRow;
   authorizationKind: "legacy" | "capability";
@@ -86,6 +88,11 @@ export function EmergencyCardContent({
    * user_id to the client (get_emergency_card deliberately never returns
    * it). Never trust this from anywhere but a server-side check. */
   isOwner?: boolean;
+  /** Issue #542: the raw capability token, passed only by the /card/c/[token]
+   * route (never by the legacy /card/[id] route, which has no capability to
+   * re-check proof-of-presence against). Used solely to let the responder
+   * trigger notify_emergency_contacts(); never persisted here. */
+  capabilityToken?: string;
 }) {
   const status: VerificationStatus =
     card.trust_state === "unverified"
@@ -289,6 +296,10 @@ export function EmergencyCardContent({
               })}
             </ul>
           </section>
+        ) : null}
+
+        {capabilityToken && card.emergency_contacts?.length ? (
+          <NotifyContactsForm token={capabilityToken} />
         ) : null}
 
         {card.language ? (

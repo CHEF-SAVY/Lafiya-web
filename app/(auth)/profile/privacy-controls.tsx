@@ -1,4 +1,5 @@
 import { formatDateTime } from "@/lib/format/datetime";
+import { buildEmergencyContactMessage } from "@/lib/emergency/notify-contacts";
 import type { ConsentEventRow, DisclosurePolicy } from "@/lib/supabase/types";
 
 import { recordConsentChoice, updateDisclosureChoices } from "./actions";
@@ -8,7 +9,18 @@ const purposes = [
   ["offline_caching", "Offline caching on responder devices"],
   ["clinical_verification", "Clinical verification"],
   ["optional_analytics", "Optional analytics"],
+  [
+    "emergency_contact_notification",
+    "Let a responder notify my emergency contacts",
+  ],
 ] as const;
+
+/** Issue #542: preview of the exact templated message a responder can
+ * trigger, shown next to the opt-in toggle so consent is informed. */
+const emergencyContactNotificationPreview = buildEmergencyContactMessage({
+  patientFirstName: null,
+  facilityName: null,
+});
 
 const disclosureFields = [
   "name",
@@ -53,35 +65,41 @@ export function PrivacyControls({
         {purposes.map(([purpose, label]) => {
           const active = latest.get(purpose)?.action === "acknowledged";
           return (
-            <form
-              action={recordConsentChoice}
-              key={purpose}
-              data-testid={`consent-form-${purpose}`}
-              className="flex items-center justify-between gap-4"
-            >
-              <input type="hidden" name="purpose" value={purpose} />
-              <input
-                type="hidden"
-                name="action"
-                value={active ? "withdrawn" : "acknowledged"}
-              />
-              <span>
-                {label}{" "}
-                <span
-                  data-testid={`consent-status-${purpose}`}
-                  className="text-xs text-zinc-500"
-                >
-                  ({active ? "allowed" : "withdrawn"})
-                </span>
-              </span>
-              <button
-                type="submit"
-                data-testid={`consent-toggle-${purpose}`}
-                className="min-h-11 rounded-full border px-4 py-2 focus:ring-2 focus:ring-zinc-400 focus:ring-offset-0 focus:outline-none dark:focus:ring-zinc-600"
+            <div key={purpose} className="flex flex-col gap-1">
+              <form
+                action={recordConsentChoice}
+                data-testid={`consent-form-${purpose}`}
+                className="flex items-center justify-between gap-4"
               >
-                {active ? "Withdraw" : "Allow"}
-              </button>
-            </form>
+                <input type="hidden" name="purpose" value={purpose} />
+                <input
+                  type="hidden"
+                  name="action"
+                  value={active ? "withdrawn" : "acknowledged"}
+                />
+                <span>
+                  {label}{" "}
+                  <span
+                    data-testid={`consent-status-${purpose}`}
+                    className="text-xs text-zinc-500"
+                  >
+                    ({active ? "allowed" : "withdrawn"})
+                  </span>
+                </span>
+                <button
+                  type="submit"
+                  data-testid={`consent-toggle-${purpose}`}
+                  className="min-h-11 rounded-full border px-4 py-2 focus:ring-2 focus:ring-zinc-400 focus:ring-offset-0 focus:outline-none dark:focus:ring-zinc-600"
+                >
+                  {active ? "Withdraw" : "Allow"}
+                </button>
+              </form>
+              {purpose === "emergency_contact_notification" ? (
+                <p className="text-xs text-zinc-500 dark:text-zinc-500">
+                  Preview: &ldquo;{emergencyContactNotificationPreview}&rdquo;
+                </p>
+              ) : null}
+            </div>
           );
         })}
       </div>

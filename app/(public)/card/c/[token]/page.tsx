@@ -126,5 +126,11 @@ export default async function CapabilityCardPage({
     }
   });
 
-  return <EmergencyCardContent card={card} authorizationKind="capability" />;
+  return (
+    <EmergencyCardContent
+      card={card}
+      authorizationKind="capability"
+      capabilityToken={token}
+    />
+  );
 }
