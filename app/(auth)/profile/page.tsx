@@ -23,6 +23,7 @@ import { LastChangeNotice, type RevisionSnapshot } from "./last-change-notice";
 import { ProfileForm } from "./profile-form";
 import { PrivacyControls } from "./privacy-controls";
 import { QrCardDisplay } from "./qr-card-display";
+import { WallpaperGenerator } from "./wallpaper-generator";
 
 export const metadata: Metadata = {
   title: "Your Profile · Lafiya",
@@ -210,6 +211,7 @@ export default async function ProfilePage() {
             />
           </div>
           <ProfileCompleteness profile={profile} />
+          <WallpaperGenerator />
         </>
       ) : null}
 
