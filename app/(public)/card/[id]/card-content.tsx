@@ -1,3 +1,4 @@
+import { parsePhoneNumberFromString } from "libphonenumber-js";
 import Image from "next/image";
 import Link from "next/link";
 
@@ -38,10 +39,40 @@ function formatRelativeTime(value: string | null): string {
   }).format(date);
 }
 
-function phoneHref(phone: string): string | null {
-  const normalized = phone.replace(/[\s().-]/g, "");
-  return /^\+?[1-9]\d{6,14}$/.test(normalized) ? `tel:${normalized}` : null;
+type ContactLinks = {
+  tel: string;
+  sms: string;
+  whatsapp: string;
+};
+
+/**
+ * Contact numbers are already normalized to E.164 at save time (see
+ * lib/records/canonicalization.ts), but older records may predate that
+ * normalization, so this re-parses defensively (default region "NG",
+ * matching the rest of the app) rather than trusting the stored format.
+ * Returns null for anything that still can't be parsed as a valid number,
+ * which hides the one-tap actions for that contact instead of emitting a
+ * broken link.
+ */
+function contactLinks(phone: string, patientName: string): ContactLinks | null {
+  const parsed = parsePhoneNumberFromString(phone, "NG");
+  if (!parsed?.isValid()) return null;
+
+  const e164 = parsed.number;
+  const digits = e164.slice(1); // wa.me expects digits only, no leading "+"
+  const message = encodeURIComponent(
+    `I'm a responder for ${patientName}. Please call me back.`,
+  );
+
+  return {
+    tel: `tel:${e164}`,
+    sms: `sms:${e164}?&body=${message}`,
+    whatsapp: `https://wa.me/${digits}?text=${message}`,
+  };
 }
+
+const actionButtonClassName =
+  "inline-flex min-h-11 min-w-11 items-center justify-center rounded-full border border-zinc-950 px-4 text-sm font-medium text-zinc-950 underline-offset-2 hover:underline focus:ring-2 focus:ring-zinc-400 focus:ring-offset-0 focus:outline-none dark:border-zinc-50 dark:text-zinc-50 dark:focus:ring-zinc-600";
 
 export function EmergencyCardContent({
   card,
@@ -204,7 +235,10 @@ export function EmergencyCardContent({
             </h2>
             <ul role="list" className="mt-2 flex flex-col gap-3">
               {card.emergency_contacts.map((contact) => {
-                const href = phoneHref(contact.phone);
+                const links = contactLinks(
+                  contact.phone,
+                  card.name ?? "the patient",
+                );
                 return (
                   <li
                     key={`${contact.name}-${contact.phone}`}
@@ -216,13 +250,35 @@ export function EmergencyCardContent({
                     <p className="text-sm text-zinc-600 dark:text-zinc-400">
                       {contact.relationship}
                     </p>
-                    {href ? (
-                      <a
-                        href={href}
-                        className="mt-2 inline-flex min-h-11 items-center rounded-full bg-zinc-950 px-4 text-sm font-medium text-white underline-offset-2 hover:underline focus:ring-2 focus:ring-zinc-400 focus:ring-offset-0 focus:outline-none dark:bg-zinc-50 dark:text-zinc-950 dark:focus:ring-zinc-600"
-                      >
-                        Call {contact.phone}
-                      </a>
+                    <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                      {contact.phone}
+                    </p>
+                    {links ? (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <a
+                          href={links.tel}
+                          aria-label={`Call ${contact.name}`}
+                          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-full bg-zinc-950 px-4 text-sm font-medium text-white underline-offset-2 hover:underline focus:ring-2 focus:ring-zinc-400 focus:ring-offset-0 focus:outline-none dark:bg-zinc-50 dark:text-zinc-950 dark:focus:ring-zinc-600"
+                        >
+                          Call
+                        </a>
+                        <a
+                          href={links.sms}
+                          aria-label={`Text ${contact.name}`}
+                          className={actionButtonClassName}
+                        >
+                          Text
+                        </a>
+                        <a
+                          href={links.whatsapp}
+                          aria-label={`WhatsApp ${contact.name}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={actionButtonClassName}
+                        >
+                          WhatsApp
+                        </a>
+                      </div>
                     ) : (
                       <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
                         Phone number unavailable
