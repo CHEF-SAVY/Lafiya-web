@@ -4,6 +4,7 @@ import { formatDate } from "@/lib/format/datetime";
 import { generateQrDataUrl } from "@/lib/qr/generateQrDataUrl";
 
 import { CopyLinkButton } from "./copy-link-button";
+import { NfcWriteButton } from "./nfc-write-button";
 import { RegenerateCardButton } from "./regenerate-card-button";
 
 export async function QrCardDisplay({
@@ -75,8 +76,9 @@ export async function QrCardDisplay({
         This legacy QR will stop working on {formatDate(legacySunsetAt)}.
         Create a current emergency QR below.
       </p>
-      <div className="flex gap-3">
+      <div className="flex flex-wrap justify-center gap-3">
         <CopyLinkButton text={cardUrl} />
+        <NfcWriteButton cardUrl={cardUrl} revokeHref="#capability-share-heading" />
         <RegenerateCardButton />
       </div>
     </div>
