@@ -18,6 +18,7 @@ import { AttestationStatusBanner } from "./attestation-status-banner";
 import { AccessSummary } from "./access-summary";
 import { CapabilitySharePanel } from "./capability-share-panel";
 import { DeleteAccountButton } from "./delete-account-button";
+import { MfaEnrollment } from "./mfa-enrollment";
 import { MissingSecretBanner } from "./missing-secret-banner";
 import { LastChangeNotice, type RevisionSnapshot } from "./last-change-notice";
 import { ProfileForm } from "./profile-form";
@@ -242,6 +243,15 @@ export default async function ProfilePage() {
           events={consentEvents ?? []}
         />
       ) : null}
+
+      <hr className="border-zinc-200 dark:border-zinc-800" />
+
+      <div className="flex flex-col gap-4">
+        <h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+          Security
+        </h2>
+        <MfaEnrollment />
+      </div>
 
       <hr className="border-zinc-200 dark:border-zinc-800" />
 

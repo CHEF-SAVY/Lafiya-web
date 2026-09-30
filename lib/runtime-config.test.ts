@@ -148,10 +148,29 @@ describe("runtime configuration matrix", () => {
       },
       payoutIndexer: { enabled: false },
       sentry: { enabled: true },
+      clientIp: { trustedProxyHops: 1, header: "x-vercel-forwarded-for" },
     });
     expect(JSON.stringify(config)).not.toContain(
       "managed-signing-key-reference",
     );
+  });
+
+  it("honors TRUSTED_PROXY_HOPS and CLIENT_IP_HEADER overrides (#517)", () => {
+    const config = getRuntimeConfig(
+      baseEnv({ TRUSTED_PROXY_HOPS: "3", CLIENT_IP_HEADER: "cf-connecting-ip" }),
+    );
+    expect(config.clientIp).toEqual({
+      trustedProxyHops: 3,
+      header: "cf-connecting-ip",
+    });
+  });
+
+  it("defaults TRUSTED_PROXY_HOPS to 1 and CLIENT_IP_HEADER to Vercel's header (#517)", () => {
+    const config = getRuntimeConfig(baseEnv());
+    expect(config.clientIp).toEqual({
+      trustedProxyHops: 1,
+      header: "x-vercel-forwarded-for",
+    });
   });
 });
 
