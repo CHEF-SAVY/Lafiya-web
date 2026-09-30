@@ -5,6 +5,7 @@ import { after } from "next/server";
 import { logError } from "@/lib/logging/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { getAvatarSignedUrl } from "@/lib/storage/avatar";
 import { EmergencyCardContent } from "./card-content";
 
 /**
@@ -117,6 +118,11 @@ export default async function PublicCardPage({
     isOwner = ownProfile?.card_public_id === id;
   }
 
+  // Issue #528: resolve a short-lived signed URL for the avatar photo
+  // server-side. Authorization is established: the card ID bearer model
+  // permits viewing the photo just as it does the rest of the card data.
+  const signedPhotoUrl = await getAvatarSignedUrl(data[0].photo_url);
+
   return (
     <>
       {/* EmergencyCardContent below renders its own full-page <main> wrapper
@@ -137,6 +143,7 @@ export default async function PublicCardPage({
         card={data[0]}
         authorizationKind="legacy"
         isOwner={isOwner}
+        signedPhotoUrl={signedPhotoUrl}
       />
     </>
   );

@@ -8,6 +8,7 @@ import { createClient } from "@/lib/supabase/server";
 import type { ProfileRow } from "@/lib/supabase/types";
 import { validateAttestation } from "@/lib/stellar/attestation";
 import { getBaseUrl } from "@/lib/url/getBaseUrl";
+import { getAvatarSignedUrl } from "@/lib/storage/avatar";
 
 import { PreviewCardButton } from "./preview-card-button";
 import { DownloadCardButton } from "./download-card-button";
@@ -23,6 +24,8 @@ import { LastChangeNotice, type RevisionSnapshot } from "./last-change-notice";
 import { ProfileForm } from "./profile-form";
 import { PrivacyControls } from "./privacy-controls";
 import { QrCardDisplay } from "./qr-card-display";
+import { EmailChangePanel } from "./email-change-panel";
+import { GuardianPanel } from "./guardian-panel";
 
 export const metadata: Metadata = {
   title: "Your Profile · Lafiya",
@@ -131,7 +134,7 @@ export default async function ProfilePage() {
 
   const { stale, pendingRequestExists, secretMissing } = profile
     ? await checkAttestationStaleness(supabase, profile)
-    : { stale: false, pendingRequestExists: false };
+    : { stale: false, pendingRequestExists: false, secretMissing: false };
   const { data: consentEvents } = await supabase
     .from("consent_events")
     .select("*")
@@ -161,6 +164,15 @@ export default async function ProfilePage() {
         .gt("expires_at", new Date().toISOString())
         .order("issued_at", { ascending: false })
     : { data: null };
+
+  // Issue #528: resolve a signed URL for the avatar photo server-side.
+  // The owner is the authenticated user so authorization is established.
+  const signedPhotoUrl = profile?.photo_url
+    ? await getAvatarSignedUrl(profile.photo_url)
+    : null;
+
+  // Issue #531: fetch the guardian's dependant profiles.
+  const { data: dependants } = await supabase.rpc("get_my_dependants");
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 px-6 py-16">
@@ -226,6 +238,8 @@ export default async function ProfilePage() {
         <AttestationStatusBanner pendingRequestExists={pendingRequestExists} />
       ) : null}
 
+      {secretMissing ? <MissingSecretBanner /> : null}
+
       {latestRevision ? (
         <LastChangeNotice
           latest={latestRevision}
@@ -233,7 +247,20 @@ export default async function ProfilePage() {
         />
       ) : null}
 
-      <ProfileForm profile={profile} userId={user.id} />
+      <ProfileForm profile={profile} userId={user.id} signedPhotoUrl={signedPhotoUrl} />
+
+      {/* Issue #529: Email-change settings. Placed after the medical record
+          form so users encounter medical fields first (primary purpose). */}
+      <EmailChangePanel
+        currentEmail={user.email ?? ""}
+        hasPendingChange={!!(user as { new_email?: string }).new_email}
+      />
+
+      {/* Issue #531: Guardianship panel — manage dependant profiles. */}
+      <GuardianPanel
+        dependants={dependants ?? []}
+        baseUrl={await getBaseUrl()}
+      />
 
       {profile?.current_revision_id ? (
         <PrivacyControls

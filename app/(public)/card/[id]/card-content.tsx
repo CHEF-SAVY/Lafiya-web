@@ -47,6 +47,7 @@ export function EmergencyCardContent({
   card,
   authorizationKind,
   isOwner = false,
+  signedPhotoUrl,
 }: {
   card: EmergencyCardRow;
   authorizationKind: "legacy" | "capability";
@@ -55,6 +56,12 @@ export function EmergencyCardContent({
    * user_id to the client (get_emergency_card deliberately never returns
    * it). Never trust this from anywhere but a server-side check. */
   isOwner?: boolean;
+  /**
+   * Issue #528: short-lived signed URL for the avatar photo, resolved
+   * server-side from the private avatars bucket. Null when no photo is
+   * stored or signing failed. Never derived client-side from card.photo_url.
+   */
+  signedPhotoUrl?: string | null;
 }) {
   const status: VerificationStatus =
     card.trust_state === "unverified"
@@ -115,13 +122,16 @@ export function EmergencyCardContent({
           aria-labelledby="identity-heading"
           className="flex items-center gap-4"
         >
-          {card.photo_url ? (
+          {signedPhotoUrl ? (
             <Image
-              src={card.photo_url}
+              src={signedPhotoUrl}
               alt=""
               width={80}
               height={80}
               sizes="80px"
+              // Issue #528: signed URLs change per-request; disable Next.js
+              // image optimization so the optimizer never caches or rewrites them.
+              unoptimized
               className="h-20 w-20 rounded-full object-cover"
             />
           ) : null}

@@ -9,6 +9,7 @@ import {
 import { logError } from "@/lib/logging/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { getAvatarSignedUrl } from "@/lib/storage/avatar";
 
 import { EmergencyCardContent } from "../../[id]/card-content";
 import { ExpiredCapabilityState } from "./expired-state";
@@ -126,5 +127,9 @@ export default async function CapabilityCardPage({
     }
   });
 
-  return <EmergencyCardContent card={card} authorizationKind="capability" />;
+  // Issue #528: resolve a short-lived signed URL for the avatar photo
+  // server-side. Authorization is established: the capability is active.
+  const signedPhotoUrl = await getAvatarSignedUrl(card.photo_url);
+
+  return <EmergencyCardContent card={card} authorizationKind="capability" signedPhotoUrl={signedPhotoUrl} />;
 }
