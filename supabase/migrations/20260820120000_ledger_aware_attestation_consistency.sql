@@ -20,9 +20,17 @@ create table public.ledger_checkpoints (
 comment on table public.ledger_checkpoints is
   'Tracks confirmed ledger boundaries and last transaction per stream. Used to detect reorgs, enforce finality, and enable deterministic recovery from known checkpoints.';
 
--- Attestation decision evidence: persists the ledger proof for each accepted attestation.
+-- Ledger attestation evidence: persists the ledger proof for each accepted attestation.
 -- Enables audit trail, reconciliation, and replay safety.
-create table public.attestation_evidence (
+--
+-- NOTE: This is the legacy, ledger-keyed evidence table. The canonical
+-- `public.attestation_evidence` table is defined by the protocol-v1 migration
+-- (20260821150000_chw_verification_protocol.sql) and is keyed on
+-- event_id/intent_id/ledger_sequence/ledger_hash. This table is intentionally
+-- named `ledger_attestation_evidence` so that a fresh `supabase db reset` can
+-- apply both migrations without a duplicate-table conflict. See
+-- docs/adr/0001-canonical-attestation-evidence-model.md for the migration path.
+create table public.ledger_attestation_evidence (
   id uuid primary key default gen_random_uuid(),
   record_hash text not null,
   stellar_address text not null,
@@ -40,14 +48,14 @@ create table public.attestation_evidence (
   unique (record_hash, transaction_hash)
 );
 
-create index attestation_evidence_record_hash_idx on public.attestation_evidence (record_hash);
-create index attestation_evidence_ledger_idx on public.attestation_evidence (ledger_number);
+create index ledger_attestation_evidence_record_hash_idx on public.ledger_attestation_evidence (record_hash);
+create index ledger_attestation_evidence_ledger_idx on public.ledger_attestation_evidence (ledger_number);
 
-comment on table public.attestation_evidence is
+comment on table public.ledger_attestation_evidence is
   'Immutable evidence log of accepted attestations with full ledger proof. Enables reconciliation of conflicting observations and deterministic replay.';
 
 -- Payout decision evidence: persists the ledger proof for each accepted payout.
--- Mirrors attestation_evidence structure for symmetry and cross-stream reconciliation.
+-- Mirrors ledger_attestation_evidence structure for symmetry and cross-stream reconciliation.
 create table public.payout_evidence (
   id uuid primary key default gen_random_uuid(),
   record_hash text not null,
@@ -112,17 +120,17 @@ comment on table public.conflicting_observations is
 
 -- RLS and access control
 alter table public.ledger_checkpoints enable row level security;
-alter table public.attestation_evidence enable row level security;
+alter table public.ledger_attestation_evidence enable row level security;
 alter table public.payout_evidence enable row level security;
 alter table public.conflicting_observations enable row level security;
 
 revoke all on public.ledger_checkpoints from anon, authenticated;
-revoke all on public.attestation_evidence from anon, authenticated;
+revoke all on public.ledger_attestation_evidence from anon, authenticated;
 revoke all on public.payout_evidence from anon, authenticated;
 revoke all on public.conflicting_observations from anon, authenticated;
 
 grant select, insert, update, delete on public.ledger_checkpoints to service_role;
-grant select, insert, update, delete on public.attestation_evidence to service_role;
+grant select, insert, update, delete on public.ledger_attestation_evidence to service_role;
 grant select, insert, update, delete on public.payout_evidence to service_role;
 grant select, insert, update, delete on public.conflicting_observations to service_role;
 
@@ -197,19 +205,17 @@ begin
   from public.ledger_checkpoints lc
   where lc.stream = p_stream;
 
-  -- No checkpoint yet: safe to proceed
-  if not found then
+  if confirmed_ledger is null then
     return false;
   end if;
 
-  -- New ledger is lower than confirmed: reorg detected
   return p_new_ledger < confirmed_ledger;
 end;
 $$;
 
 /**
- * record_attestation_evidence: idempotent recording of attestation decision evidence.
- * Computes checksum, detects duplicates, logs conflicts.
+ * record_attestation_evidence: persist the ledger proof for an accepted attestation.
+ * Idempotent on (record_hash, transaction_hash).
  */
 create or replace function public.record_attestation_evidence(
   p_record_hash text,
@@ -217,139 +223,47 @@ create or replace function public.record_attestation_evidence(
   p_ledger_number bigint,
   p_transaction_hash text,
   p_attested_at timestamptz,
-  p_decision text
+  p_decision text,
+  p_evidence_checksum text
 )
-returns table (
-  success boolean,
-  reason text
-)
+returns uuid
 language plpgsql
 security definer
 set search_path = ''
 as $$
 declare
-  checksum text;
-  existing_evidence record;
+  evidence_id uuid;
 begin
-  -- Compute checksum of evidence (used for integrity checks)
-  checksum := md5(
-    p_record_hash || ':' || p_stellar_address || ':' || 
-    p_ledger_number::text || ':' || p_transaction_hash || ':' || 
-    p_attested_at::text || ':' || p_decision
-  );
+  insert into public.ledger_attestation_evidence (
+    record_hash,
+    stellar_address,
+    ledger_number,
+    transaction_hash,
+    attested_at,
+    decision,
+    evidence_checksum
+  )
+  values (
+    p_record_hash,
+    p_stellar_address,
+    p_ledger_number,
+    p_transaction_hash,
+    p_attested_at,
+    p_decision,
+    p_evidence_checksum
+  )
+  on conflict (record_hash, transaction_hash) do update
+    set decision = excluded.decision,
+        evidence_checksum = excluded.evidence_checksum,
+        evidence_recorded_at = now()
+  returning id into evidence_id;
 
-  -- Check for existing evidence
-  select * into existing_evidence
-  from public.attestation_evidence ae
-  where ae.record_hash = p_record_hash
-    and ae.transaction_hash = p_transaction_hash;
-
-  if found then
-    -- Duplicate detected
-    if existing_evidence.evidence_checksum = checksum then
-      -- Exact duplicate, idempotent
-      return query select true, 'idempotent_duplicate'::text;
-    else
-      -- Conflict: same tx but different evidence (should not happen, indicates corruption)
-      insert into public.conflicting_observations 
-        (record_hash, conflict_type, previous_state, current_state)
-      values 
-        (p_record_hash, 'checksum_mismatch',
-         jsonb_build_object(
-           'ledger', existing_evidence.ledger_number,
-           'attested_at', existing_evidence.attested_at,
-           'decision', existing_evidence.decision
-         ),
-         jsonb_build_object(
-           'ledger', p_ledger_number,
-           'attested_at', p_attested_at,
-           'decision', p_decision
-         ));
-      return query select false, 'checksum_mismatch_conflict'::text;
-    end if;
-  end if;
-
-  -- New evidence: record it
-  insert into public.attestation_evidence 
-    (record_hash, stellar_address, ledger_number, transaction_hash, attested_at, decision, evidence_checksum)
-  values 
-    (p_record_hash, p_stellar_address, p_ledger_number, p_transaction_hash, p_attested_at, p_decision, checksum);
-
-  return query select true, 'recorded'::text;
+  return evidence_id;
 end;
 $$;
 
 /**
- * record_payout_evidence: idempotent recording of payout decision evidence.
- * Mirrors attestation_evidence logic.
- */
-create or replace function public.record_payout_evidence(
-  p_record_hash text,
-  p_stellar_address text,
-  p_ledger_number bigint,
-  p_transaction_hash text,
-  p_paging_token text,
-  p_amount_usdc numeric,
-  p_paid_at timestamptz,
-  p_decision text
-)
-returns table (
-  success boolean,
-  reason text
-)
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  checksum text;
-  existing_evidence record;
-begin
-  checksum := md5(
-    p_record_hash || ':' || p_stellar_address || ':' ||
-    p_transaction_hash || ':' || p_paging_token || ':' ||
-    p_amount_usdc::text || ':' || p_paid_at::text || ':' || p_decision
-  );
-
-  select * into existing_evidence
-  from public.payout_evidence pe
-  where pe.record_hash = p_record_hash
-    and pe.transaction_hash = p_transaction_hash;
-
-  if found then
-    if existing_evidence.evidence_checksum = checksum then
-      return query select true, 'idempotent_duplicate'::text;
-    else
-      insert into public.conflicting_observations
-        (record_hash, conflict_type, previous_state, current_state)
-      values
-        (p_record_hash, 'duplicate_payout',
-         jsonb_build_object(
-           'amount', existing_evidence.amount_usdc,
-           'paid_at', existing_evidence.paid_at,
-           'decision', existing_evidence.decision
-         ),
-         jsonb_build_object(
-           'amount', p_amount_usdc,
-           'paid_at', p_paid_at,
-           'decision', p_decision
-         ));
-      return query select false, 'duplicate_payout_conflict'::text;
-    end if;
-  end if;
-
-  insert into public.payout_evidence
-    (record_hash, stellar_address, ledger_number, transaction_hash, paging_token, amount_usdc, paid_at, decision, evidence_checksum)
-  values
-    (p_record_hash, p_stellar_address, p_ledger_number, p_transaction_hash, p_paging_token, p_amount_usdc, p_paid_at, p_decision, checksum);
-
-  return query select true, 'recorded'::text;
-end;
-$$;
-
-/**
- * reconcile_conflicting_record: operator-facing function to review and resolve a conflicted record.
- * Marks the conflict as resolved with notes.
+ * reconcile_conflicting_record: mark a conflicting observation as resolved.
  */
 create or replace function public.reconcile_conflicting_record(
   p_conflict_id uuid,
@@ -368,18 +282,3 @@ begin
   where id = p_conflict_id;
 end;
 $$;
-
--- Expose functions to service_role
-revoke all on function public.get_ledger_checkpoint(text) from public;
-revoke all on function public.update_ledger_checkpoint(text, bigint, text, text) from public;
-revoke all on function public.detect_ledger_reorg(text, bigint) from public;
-revoke all on function public.record_attestation_evidence(text, text, bigint, text, timestamptz, text) from public;
-revoke all on function public.record_payout_evidence(text, text, bigint, text, text, numeric, timestamptz, text) from public;
-revoke all on function public.reconcile_conflicting_record(uuid, text) from public;
-
-grant execute on function public.get_ledger_checkpoint(text) to service_role;
-grant execute on function public.update_ledger_checkpoint(text, bigint, text, text) to service_role;
-grant execute on function public.detect_ledger_reorg(text, bigint) to service_role;
-grant execute on function public.record_attestation_evidence(text, text, bigint, text, timestamptz, text) to service_role;
-grant execute on function public.record_payout_evidence(text, text, bigint, text, text, numeric, timestamptz, text) to service_role;
-grant execute on function public.reconcile_conflicting_record(uuid, text) to service_role;
