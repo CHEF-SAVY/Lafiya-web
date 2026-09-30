@@ -282,6 +282,8 @@ export type PayoutObligationRow = {
   adjustment_reason: string | null;
 };
 
+export type PayoutSettlementStatus = "matched" | "quarantined";
+
 export type PayoutSettlementRow = {
   id: string;
   obligation_id: string | null;
@@ -291,7 +293,7 @@ export type PayoutSettlementRow = {
   asset_identifier: string;
   sponsor_pool: string;
   settled_at: string;
-  status: "matched" | "quarantined";
+  status: PayoutSettlementStatus;
   reason_code: string | null;
   created_at: string;
 };
@@ -302,6 +304,42 @@ export type ProtocolIndexerCheckpointRow = {
   ledger_sequence: number | null;
   ledger_hash: string | null;
   updated_at: string;
+};
+
+export type LedgerCheckpointRow = {
+  stream: string;
+  ledger_number: number;
+  confirmed_at: string;
+  last_tx_hash: string | null;
+  updated_at: string;
+};
+
+export type PayoutEvidenceRow = {
+  id: string;
+  record_hash: string;
+  stellar_address: string;
+  ledger_number: number | null;
+  transaction_hash: string;
+  paging_token: string;
+  amount_usdc: number;
+  paid_at: string;
+  decision: string;
+  evidence_recorded_at: string;
+  evidence_checksum: string;
+  created_at: string;
+};
+
+export type ConflictingObservationRow = {
+  id: string;
+  record_hash: string;
+  conflict_type: string;
+  previous_state: Record<string, unknown> | null;
+  current_state: Record<string, unknown> | null;
+  detected_at: string;
+  resolved: boolean;
+  resolution_notes: string | null;
+  resolved_at: string | null;
+  created_at: string;
 };
 
 export type ProtocolQuarantineRow = {
@@ -627,6 +665,27 @@ export type Database = {
         Update: Partial<Omit<PayoutSettlementRow, "id">>;
         Relationships: [];
       };
+      ledger_checkpoints: {
+        Row: LedgerCheckpointRow;
+        Insert: Partial<LedgerCheckpointRow>;
+        Update: Partial<LedgerCheckpointRow>;
+        Relationships: [];
+      };
+      payout_evidence: {
+        Row: PayoutEvidenceRow;
+        Insert: Omit<PayoutEvidenceRow, "id" | "created_at"> & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<Omit<PayoutEvidenceRow, "id">>;
+        Relationships: [];
+      };
+      conflicting_observations: {
+        Row: ConflictingObservationRow;
+        Insert: Partial<ConflictingObservationRow>;
+        Update: Partial<Omit<ConflictingObservationRow, "id">>;
+        Relationships: [];
+      };
       protocol_indexer_checkpoints: {
         Row: ProtocolIndexerCheckpointRow;
         Insert: Pick<ProtocolIndexerCheckpointRow, "stream" | "cursor"> &
@@ -842,7 +901,9 @@ export type Database = {
     };
     Enums: {
       blood_group_enum: BloodGroup;
+      chw_payout_status: ChwPayoutStatus;
       genotype_enum: Genotype;
+      payout_settlement_status: PayoutSettlementStatus;
       record_lifecycle_state: RecordLifecycleState;
     };
   };
