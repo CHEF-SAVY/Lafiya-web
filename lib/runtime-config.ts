@@ -1,5 +1,8 @@
 import "server-only";
 
+import { lookup as dnsLookup } from "node:dns/promises";
+import { BlockList, isIP } from "node:net";
+
 import { z } from "zod";
 
 const MAINNET_NETWORK_PASSPHRASE =
@@ -59,6 +62,7 @@ const rawServerEnvSchema = z.object({
   PAYOUT_INDEXER_START_LEDGER: z.coerce.number().int().positive().optional(),
   PAYOUT_INDEXER_START_PAYMENT_CURSOR: optionalString,
   PAYOUT_INDEXER_CRON_SECRET: optionalString,
+  PAYOUT_INDEXER_CRON_SECRET_PREVIOUS: optionalString,
   SENTRY_ENABLED: booleanStringSchema.default(false),
   NEXT_PUBLIC_SENTRY_DSN: optionalUrl,
   SENTRY_DSN: optionalUrl,
@@ -67,6 +71,73 @@ const rawServerEnvSchema = z.object({
 });
 
 export type DeploymentEnvironment = z.infer<typeof deploymentSchema>;
+
+/**
+ * Deployments that serve real traffic (or rehearse for it) and therefore only
+ * talk to vetted Stellar infrastructure. Everything else -- development, test,
+ * ci, preview -- keeps a permissive policy so contributors can point at
+ * `http://localhost` or a private RPC.
+ */
+const ALLOWLISTED_DEPLOYMENTS: ReadonlySet<DeploymentEnvironment> = new Set([
+  "staging",
+  "pilot",
+  "production",
+  "mainnet",
+]);
+
+const MAINNET_RPC_HOSTS = [
+  "mainnet.sorobanrpc.com",
+  "soroban-rpc.mainnet.stellar.gateway.fm",
+  "stellar-soroban-public.nodies.app",
+  "rpc.lightsail.network",
+] as const;
+const MAINNET_HORIZON_HOSTS = [
+  "horizon.stellar.org",
+  "horizon.stellar.lobstr.co",
+] as const;
+const TESTNET_RPC_HOSTS = [
+  "soroban-testnet.stellar.org",
+  "soroban-rpc.testnet.stellar.gateway.fm",
+  "stellar-soroban-testnet-public.nodies.app",
+] as const;
+const TESTNET_HORIZON_HOSTS = ["horizon-testnet.stellar.org"] as const;
+
+/**
+ * Vetted RPC/Horizon hosts per allowlisted deployment (exact hostname match,
+ * no wildcards). Keyed by deployment so the list also enforces network
+ * consistency: production/mainnet must run on the mainnet passphrase and only
+ * mainnet hosts are listed for them; staging/pilot must run off-mainnet and
+ * only testnet hosts are listed for them. Providers come from the benchmark
+ * in docs/rpc-provider-benchmark.md. Adding a provider is a reviewed code
+ * change on purpose -- an environment variable could be changed by the same
+ * compromise this list defends against.
+ */
+export const rpcHostAllowlist: Readonly<
+  Partial<
+    Record<
+      DeploymentEnvironment,
+      { rpc: readonly string[]; horizon: readonly string[] }
+    >
+  >
+> = {
+  production: { rpc: MAINNET_RPC_HOSTS, horizon: MAINNET_HORIZON_HOSTS },
+  mainnet: { rpc: MAINNET_RPC_HOSTS, horizon: MAINNET_HORIZON_HOSTS },
+  staging: { rpc: TESTNET_RPC_HOSTS, horizon: TESTNET_HORIZON_HOSTS },
+  pilot: { rpc: TESTNET_RPC_HOSTS, horizon: TESTNET_HORIZON_HOSTS },
+};
+
+/** Hostname suffixes that only ever resolve inside a private network. */
+const PRIVATE_HOST_SUFFIXES = [
+  ".localhost",
+  ".local",
+  ".internal",
+  ".lan",
+  ".intranet",
+  ".corp",
+  ".home.arpa",
+];
+
+type RpcEndpointKind = "rpc" | "horizon";
 
 export type RuntimeConfig = {
   deployment: DeploymentEnvironment;
@@ -80,6 +151,13 @@ export type RuntimeConfig = {
   };
   payoutIndexer: { enabled: boolean };
   sentry: { enabled: boolean };
+  /**
+   * How SOROBAN_RPC_URL / STELLAR_HORIZON_URL were validated -- never the
+   * URLs themselves. "allowlist": scheme, host class, and host allowlist were
+   * enforced; "permissive": a local/test deployment where any http(s) URL is
+   * accepted.
+   */
+  rpcEndpoints: { policy: "allowlist" | "permissive" };
 };
 
 /**
@@ -131,6 +209,72 @@ function isSorobanContractId(value: string | undefined): boolean {
   return value !== undefined && /^C[A-Z2-7]{55}$/.test(value);
 }
 
+function normalizedHostname(url: URL): string {
+  // URL keeps IPv6 literals bracketed ("[::1]") and may keep a trailing dot.
+  return url.hostname
+    .replace(/^\[(.*)\]$/, "$1")
+    .replace(/\.$/, "")
+    .toLowerCase();
+}
+
+function isPrivateHostname(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    // A single-label name resolves through the local search domain only.
+    !hostname.includes(".") ||
+    PRIVATE_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix))
+  );
+}
+
+/**
+ * Validates one configured Stellar endpoint. Throws a value-free
+ * RuntimeConfigError naming the variable (never its value -- a provider URL
+ * can embed an API key in its path).
+ */
+function validateRpcUrl(
+  variable: "SOROBAN_RPC_URL" | "STELLAR_HORIZON_URL",
+  kind: RpcEndpointKind,
+  value: string,
+  deployment: DeploymentEnvironment,
+): void {
+  const url = new URL(value);
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new RuntimeConfigError(
+      "RPC_URL_UNSUPPORTED_SCHEME",
+      `${variable} must be an http(s) URL`,
+    );
+  }
+
+  const allowlist = rpcHostAllowlist[deployment];
+  if (!ALLOWLISTED_DEPLOYMENTS.has(deployment) || !allowlist) return;
+
+  if (url.protocol !== "https:") {
+    throw new RuntimeConfigError(
+      "RPC_URL_INSECURE_SCHEME",
+      `${variable} must use https in the '${deployment}' deployment`,
+    );
+  }
+  const hostname = normalizedHostname(url);
+  if (isIP(hostname) !== 0) {
+    throw new RuntimeConfigError(
+      "RPC_URL_IP_LITERAL",
+      `${variable} must use a DNS hostname, not an IP address, in the '${deployment}' deployment`,
+    );
+  }
+  if (isPrivateHostname(hostname)) {
+    throw new RuntimeConfigError(
+      "RPC_URL_PRIVATE_HOST",
+      `${variable} points at a local or private-network host, which is not allowed in the '${deployment}' deployment`,
+    );
+  }
+  if (!allowlist[kind].includes(hostname)) {
+    throw new RuntimeConfigError(
+      "RPC_URL_HOST_NOT_ALLOWED",
+      `${variable} host is not in rpcHostAllowlist.${deployment}.${kind} (lib/runtime-config.ts)`,
+    );
+  }
+}
+
 /**
  * Parses all server configuration as a single security boundary. Feature
  * groups are explicit: a deployed feature is either complete or the process
@@ -161,6 +305,8 @@ export function getRuntimeConfig(
     PAYOUT_INDEXER_START_PAYMENT_CURSOR:
       env.PAYOUT_INDEXER_START_PAYMENT_CURSOR,
     PAYOUT_INDEXER_CRON_SECRET: env.PAYOUT_INDEXER_CRON_SECRET,
+    PAYOUT_INDEXER_CRON_SECRET_PREVIOUS:
+      env.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS,
     SENTRY_ENABLED: env.SENTRY_ENABLED,
     NEXT_PUBLIC_SENTRY_DSN: env.NEXT_PUBLIC_SENTRY_DSN,
     SENTRY_DSN: env.SENTRY_DSN,
@@ -226,6 +372,16 @@ export function getRuntimeConfig(
     );
   }
 
+  validateRpcUrl("SOROBAN_RPC_URL", "rpc", config.SOROBAN_RPC_URL, deployment);
+  if (config.STELLAR_HORIZON_URL) {
+    validateRpcUrl(
+      "STELLAR_HORIZON_URL",
+      "horizon",
+      config.STELLAR_HORIZON_URL,
+      deployment,
+    );
+  }
+
   if (isProduction) {
     requireConfigured(
       protocolConfigured,
@@ -267,9 +423,24 @@ export function getRuntimeConfig(
       (config.PAYOUT_INDEXER_CRON_SECRET?.length ?? 0) >= 32,
       "CRON_SECRET_TOO_SHORT",
     );
+    // The previous secret is only set during a rotation window
+    // (docs/operations/cron-secret-rotation.md).
+    if (config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS !== undefined) {
+      requireConfigured(
+        config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS.length >= 32,
+        "CRON_SECRET_PREVIOUS_TOO_SHORT",
+      );
+      requireConfigured(
+        config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS !==
+          config.PAYOUT_INDEXER_CRON_SECRET,
+        "CRON_SECRET_PREVIOUS_MATCHES_CURRENT",
+      );
+    }
   } else {
     requireConfigured(
-      indexerSettings.every((value) => value === undefined),
+      [...indexerSettings, config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS].every(
+        (value) => value === undefined,
+      ),
       "PAYOUT_INDEXER_DISABLED_WITH_CONFIGURATION",
     );
   }
@@ -303,7 +474,135 @@ export function getRuntimeConfig(
     },
     payoutIndexer: { enabled: config.PAYOUT_INDEXER_ENABLED },
     sentry: { enabled: config.SENTRY_ENABLED },
+    rpcEndpoints: {
+      policy: ALLOWLISTED_DEPLOYMENTS.has(deployment)
+        ? "allowlist"
+        : "permissive",
+    },
   };
 }
 
 export const serverEnvSchema = rawServerEnvSchema;
+
+const privateAddresses = new BlockList();
+for (const [network, prefix] of [
+  ["0.0.0.0", 8], // "this" network
+  ["10.0.0.0", 8], // RFC 1918
+  ["100.64.0.0", 10], // carrier-grade NAT
+  ["127.0.0.0", 8], // loopback
+  ["169.254.0.0", 16], // link-local, incl. cloud metadata 169.254.169.254
+  ["172.16.0.0", 12], // RFC 1918
+  ["192.0.0.0", 24], // IETF protocol assignments
+  ["192.168.0.0", 16], // RFC 1918
+  ["198.18.0.0", 15], // benchmarking
+  ["224.0.0.0", 4], // multicast
+  ["240.0.0.0", 4], // reserved + broadcast
+] as const) {
+  privateAddresses.addSubnet(network, prefix, "ipv4");
+}
+for (const [network, prefix] of [
+  ["::", 128], // unspecified
+  ["::1", 128], // loopback
+  ["fc00::", 7], // unique local
+  ["fe80::", 10], // link-local
+  ["ff00::", 8], // multicast
+] as const) {
+  privateAddresses.addSubnet(network, prefix, "ipv6");
+}
+
+/** True for loopback, private, link-local, and other non-public addresses. */
+export function isPrivateAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 4) return privateAddresses.check(address, "ipv4");
+  if (family === 6) {
+    // IPv4-mapped IPv6 (::ffff:a.b.c.d, or its hex form ::ffff:7f00:1) is
+    // judged by the IPv4 address it wraps.
+    const dotted = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
+    if (dotted) return privateAddresses.check(dotted[1], "ipv4");
+    const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(address);
+    if (hex) {
+      const high = parseInt(hex[1], 16);
+      const low = parseInt(hex[2], 16);
+      const ipv4 = [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
+      return privateAddresses.check(ipv4, "ipv4");
+    }
+    return privateAddresses.check(address, "ipv6");
+  }
+  // Not an IP at all: refuse rather than guess.
+  return true;
+}
+
+export type RpcResolutionStatus = "verified" | "skipped" | "not_run";
+
+type LookupAll = (
+  hostname: string,
+) => Promise<ReadonlyArray<{ address: string }>>;
+
+const defaultLookup: LookupAll = (hostname) =>
+  dnsLookup(hostname, { all: true, verbatim: true });
+
+// Stored on globalThis rather than in module scope: Next may evaluate this
+// module separately for instrumentation and for route bundles.
+const RESOLUTION_STATUS_KEY = Symbol.for("lafiya.rpcResolutionStatus");
+type ResolutionStatusHolder = { [RESOLUTION_STATUS_KEY]?: RpcResolutionStatus };
+
+/** The outcome of the boot-time DNS check, for readiness output. */
+export function getRpcResolutionStatus(): RpcResolutionStatus {
+  return (
+    (globalThis as ResolutionStatusHolder)[RESOLUTION_STATUS_KEY] ?? "not_run"
+  );
+}
+
+/**
+ * Boot-time DNS check for the configured Stellar endpoints (called from
+ * instrumentation.ts before the server accepts traffic). In allowlisted
+ * deployments every address a host resolves to must be public, so a
+ * compromised or poisoned DNS record cannot aim server-side fetches at
+ * internal services or the cloud metadata endpoint at boot.
+ *
+ * Residual risk: this is a point-in-time check. A host that re-resolves to a
+ * private address after boot (DNS rebinding) is not caught here; that needs
+ * network-layer egress filtering, which is out of scope for app config.
+ * Resolution failure is treated as fatal (fail closed).
+ */
+export async function verifyRpcHostResolution(
+  env: NodeJS.ProcessEnv = process.env,
+  lookup: LookupAll = defaultLookup,
+): Promise<RpcResolutionStatus> {
+  const config = getRuntimeConfig(env);
+  const holder = globalThis as ResolutionStatusHolder;
+  if (config.rpcEndpoints.policy !== "allowlist") {
+    holder[RESOLUTION_STATUS_KEY] = "skipped";
+    return "skipped";
+  }
+
+  const endpoints = [
+    ["SOROBAN_RPC_URL", env.SOROBAN_RPC_URL],
+    ["STELLAR_HORIZON_URL", env.STELLAR_HORIZON_URL],
+  ] as const;
+  for (const [variable, value] of endpoints) {
+    if (!value || value.trim() === "") continue;
+    const hostname = normalizedHostname(new URL(value));
+    let addresses: ReadonlyArray<{ address: string }>;
+    try {
+      addresses = await lookup(hostname);
+    } catch {
+      throw new RuntimeConfigError(
+        "RPC_URL_UNRESOLVABLE",
+        `${variable} host did not resolve at startup`,
+      );
+    }
+    if (
+      addresses.length === 0 ||
+      addresses.some(({ address }) => isPrivateAddress(address))
+    ) {
+      throw new RuntimeConfigError(
+        "RPC_URL_RESOLVES_PRIVATE",
+        `${variable} host resolves to a private, loopback, or link-local address`,
+      );
+    }
+  }
+
+  holder[RESOLUTION_STATUS_KEY] = "verified";
+  return "verified";
+}

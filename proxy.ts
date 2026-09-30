@@ -1,15 +1,28 @@
 import { createServerClient } from "@supabase/ssr";
-import { type NextRequest, NextResponse } from "next/server";
+import {
+  type NextFetchEvent,
+  type NextRequest,
+  NextResponse,
+} from "next/server";
 
 import { clientEnv } from "@/lib/env";
+import {
+  createSessionTouchThrottle,
+  sessionIdFromAccessToken,
+} from "@/lib/sessions/throttle";
+import { coarseUserAgent } from "@/lib/sessions/user-agent";
+import type { Database } from "@/lib/supabase/types";
 
 const PROTECTED_PREFIXES = ["/profile"];
 const AUTH_ONLY_PATHS = ["/signin", "/signup"];
 
-export async function proxy(request: NextRequest) {
+// Module scope so it survives across requests handled by this instance.
+const sessionTouchThrottle = createSessionTouchThrottle();
+
+export async function proxy(request: NextRequest, event?: NextFetchEvent) {
   let response = NextResponse.next({ request });
 
-  const supabase = createServerClient(
+  const supabase = createServerClient<Database>(
     clientEnv.NEXT_PUBLIC_SUPABASE_URL,
     clientEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     {
@@ -36,6 +49,31 @@ export async function proxy(request: NextRequest) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
+
+  if (user) {
+    // Last-seen for the sessions panel (#523). getUser() above has already
+    // verified the token with the Auth server. The session id read here is
+    // only a throttle key: touch_my_session() takes the real one from the
+    // JWT Postgres verifies, and rewrites last_seen_at at most once per
+    // five minutes.
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const sessionId = sessionIdFromAccessToken(session?.access_token);
+    if (sessionId && sessionTouchThrottle.shouldTouch(sessionId)) {
+      const { browser, os } = coarseUserAgent(
+        request.headers.get("user-agent"),
+      );
+      const touch = Promise.resolve(
+        supabase.rpc("touch_my_session", { p_browser: browser, p_os: os }),
+      ).then(
+        () => undefined,
+        // Best effort: a failed last-seen write must never block navigation.
+        () => undefined,
+      );
+      if (event) event.waitUntil(touch);
+    }
+  }
 
   const { pathname } = request.nextUrl;
   const isPublicCard = pathname === "/card" || pathname.startsWith("/card/");

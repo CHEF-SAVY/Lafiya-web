@@ -2,7 +2,7 @@ import { rpc } from "@stellar/stellar-sdk";
 import { NextResponse } from "next/server";
 
 import { serverEnv } from "@/lib/env-server";
-import { getRuntimeConfig } from "@/lib/runtime-config";
+import { getRpcResolutionStatus, getRuntimeConfig } from "@/lib/runtime-config";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -61,6 +61,13 @@ export async function GET() {
         attestation: config.attestation.mode,
         payoutIndexer: config.payoutIndexer.enabled ? "enabled" : "disabled",
         sentry: config.sentry.enabled ? "enabled" : "disabled",
+        // Validation results for SOROBAN_RPC_URL / STELLAR_HORIZON_URL --
+        // the policy that was enforced and the boot-time DNS check outcome,
+        // never the URLs or hosts themselves.
+        rpcEndpoints: {
+          policy: config.rpcEndpoints.policy,
+          resolution: getRpcResolutionStatus(),
+        },
       },
     },
     {

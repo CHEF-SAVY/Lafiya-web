@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 
 import { computeRecordHash } from "@/lib/attestation/recordHash";
 import { getSecretByUserId } from "@/lib/attestation/recordSecret";
@@ -7,6 +8,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type { ProfileRow } from "@/lib/supabase/types";
 import { validateAttestation } from "@/lib/stellar/attestation";
+import { sessionIdFromAccessToken } from "@/lib/sessions/throttle";
+import { coarseUserAgent } from "@/lib/sessions/user-agent";
 import { getBaseUrl } from "@/lib/url/getBaseUrl";
 
 import { PreviewCardButton } from "./preview-card-button";
@@ -23,6 +26,7 @@ import { LastChangeNotice, type RevisionSnapshot } from "./last-change-notice";
 import { ProfileForm } from "./profile-form";
 import { PrivacyControls } from "./privacy-controls";
 import { QrCardDisplay } from "./qr-card-display";
+import { SessionsPanel, type SessionListItem } from "./sessions-panel";
 
 export const metadata: Metadata = {
   title: "Your Profile · Lafiya",
@@ -110,6 +114,41 @@ async function checkAttestationStaleness(
   }
 }
 
+/**
+ * The signed-in user's active sessions for the sessions panel (#523). RLS
+ * limits the select to the caller's own rows. If this device is not listed
+ * yet (proxy.ts records last-seen in the background after the response), it
+ * is recorded here first so the panel always shows "This device".
+ */
+async function loadSessions(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+): Promise<SessionListItem[]> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  const currentId = sessionIdFromAccessToken(session?.access_token);
+
+  const select = () =>
+    supabase
+      .from("user_sessions")
+      .select("session_id, browser, os, created_at, last_seen_at")
+      .order("last_seen_at", { ascending: false });
+
+  let { data } = await select();
+  if (currentId && !data?.some((row) => row.session_id === currentId)) {
+    const { browser, os } = coarseUserAgent(
+      (await headers()).get("user-agent"),
+    );
+    await supabase.rpc("touch_my_session", { p_browser: browser, p_os: os });
+    ({ data } = await select());
+  }
+
+  return (data ?? []).map((row) => ({
+    ...row,
+    current: row.session_id === currentId,
+  }));
+}
+
 export default async function ProfilePage() {
   const supabase = await createClient();
   const {
@@ -161,6 +200,7 @@ export default async function ProfilePage() {
         .gt("expires_at", new Date().toISOString())
         .order("issued_at", { ascending: false })
     : { data: null };
+  const sessions = await loadSessions(supabase);
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 px-6 py-16">
@@ -242,6 +282,10 @@ export default async function ProfilePage() {
           events={consentEvents ?? []}
         />
       ) : null}
+
+      <hr className="border-zinc-200 dark:border-zinc-800" />
+
+      <SessionsPanel sessions={sessions} />
 
       <hr className="border-zinc-200 dark:border-zinc-800" />
 

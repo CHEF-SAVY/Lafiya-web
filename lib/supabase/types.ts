@@ -363,6 +363,30 @@ export type RateLimitRecordFailureRow = {
   blocked_until: string | null;
 };
 
+/** Coarse browser family stored for a session (never a raw user agent). */
+export type SessionBrowserFamily =
+  | "Chrome"
+  | "Edge"
+  | "Firefox"
+  | "Safari"
+  | "Opera"
+  | "Samsung Internet"
+  | "Other";
+
+/** Coarse OS family stored for a session (never a version or device model). */
+export type SessionOsFamily =
+  "Android" | "iOS" | "Windows" | "macOS" | "Linux" | "ChromeOS" | "Other";
+
+/** Row shape of public.user_sessions. See lib/sessions/. */
+export type UserSessionRow = {
+  session_id: string;
+  user_id: string;
+  browser: SessionBrowserFamily;
+  os: SessionOsFamily;
+  created_at: string;
+  last_seen_at: string;
+};
+
 /** Row shape of public.frequency_limits. See lib/frequency-limit.ts. */
 export type FrequencyLimitRow = {
   key: string;
@@ -517,6 +541,13 @@ export type Database = {
         Row: FrequencyLimitRow;
         Insert: Pick<FrequencyLimitRow, "key"> & Partial<FrequencyLimitRow>;
         Update: Partial<FrequencyLimitRow>;
+        Relationships: [];
+      };
+      user_sessions: {
+        Row: UserSessionRow;
+        // Written only through touch_my_session() / revoke_my_session().
+        Insert: never;
+        Update: never;
         Relationships: [];
       };
       rate_limits: {
@@ -730,6 +761,18 @@ export type Database = {
       request_revision_verification: {
         Args: { p_expected_revision_id: string };
         Returns: ReattestationRequestRow;
+      };
+      touch_my_session: {
+        Args: { p_browser: SessionBrowserFamily; p_os: SessionOsFamily };
+        Returns: boolean;
+      };
+      revoke_my_session: {
+        Args: { p_session_id: string };
+        Returns: boolean;
+      };
+      purge_expired_user_sessions: {
+        Args: Record<string, never>;
+        Returns: number;
       };
       rate_limit_record_failure: {
         Args: { p_key: string };
