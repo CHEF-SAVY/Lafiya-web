@@ -49,6 +49,12 @@ const rawServerEnvSchema = z.object({
     .positive()
     .max(3600)
     .optional(),
+  ATTESTATION_APPROVED_WASM_HASHES: optionalString,
+  ACCOUNT_LINKAGE_HMAC_SECRET: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    z.string().min(32).optional(),
+  ),
   CHW_PROTOCOL_EPOCH_ID: optionalString,
   CHW_PROTOCOL_INTENT_SIGNING_KEY: optionalString,
   PAYOUT_INDEXER_ENABLED: booleanStringSchema.default(false),
@@ -59,6 +65,7 @@ const rawServerEnvSchema = z.object({
   PAYOUT_INDEXER_START_LEDGER: z.coerce.number().int().positive().optional(),
   PAYOUT_INDEXER_START_PAYMENT_CURSOR: optionalString,
   PAYOUT_INDEXER_CRON_SECRET: optionalString,
+  PAYOUT_INDEXER_CRON_SECRET_PREVIOUS: optionalString,
   SENTRY_ENABLED: booleanStringSchema.default(false),
   NEXT_PUBLIC_SENTRY_DSN: optionalUrl,
   SENTRY_DSN: optionalUrl,
@@ -77,6 +84,8 @@ export type RuntimeConfig = {
     mode: z.infer<typeof attestationModeSchema>;
     contractConfigured: boolean;
     protocolConfigured: boolean;
+    /** Governance-approved contract WASM hashes (issue #629). Public values. */
+    approvedWasmHashes: string[];
   };
   payoutIndexer: { enabled: boolean };
   sentry: { enabled: boolean };
@@ -150,6 +159,8 @@ export function getRuntimeConfig(
     ATTESTATION_MODE: env.ATTESTATION_MODE,
     ATTESTATION_CONTRACT_ID: env.ATTESTATION_CONTRACT_ID,
     ATTESTATION_CACHE_TTL_SECONDS: env.ATTESTATION_CACHE_TTL_SECONDS,
+    ATTESTATION_APPROVED_WASM_HASHES: env.ATTESTATION_APPROVED_WASM_HASHES,
+    ACCOUNT_LINKAGE_HMAC_SECRET: env.ACCOUNT_LINKAGE_HMAC_SECRET,
     CHW_PROTOCOL_EPOCH_ID: env.CHW_PROTOCOL_EPOCH_ID,
     CHW_PROTOCOL_INTENT_SIGNING_KEY: env.CHW_PROTOCOL_INTENT_SIGNING_KEY,
     PAYOUT_INDEXER_ENABLED: env.PAYOUT_INDEXER_ENABLED,
@@ -161,6 +172,8 @@ export function getRuntimeConfig(
     PAYOUT_INDEXER_START_PAYMENT_CURSOR:
       env.PAYOUT_INDEXER_START_PAYMENT_CURSOR,
     PAYOUT_INDEXER_CRON_SECRET: env.PAYOUT_INDEXER_CRON_SECRET,
+    PAYOUT_INDEXER_CRON_SECRET_PREVIOUS:
+      env.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS,
     SENTRY_ENABLED: env.SENTRY_ENABLED,
     NEXT_PUBLIC_SENTRY_DSN: env.NEXT_PUBLIC_SENTRY_DSN,
     SENTRY_DSN: env.SENTRY_DSN,
@@ -226,6 +239,15 @@ export function getRuntimeConfig(
     );
   }
 
+  const approvedWasmHashes = (config.ATTESTATION_APPROVED_WASM_HASHES ?? "")
+    .split(",")
+    .map((hash) => hash.trim().toLowerCase())
+    .filter(Boolean);
+  requireConfigured(
+    approvedWasmHashes.every((hash) => /^[0-9a-f]{64}$/.test(hash)),
+    "APPROVED_WASM_HASH_INVALID",
+  );
+
   if (isProduction) {
     requireConfigured(
       protocolConfigured,
@@ -267,9 +289,18 @@ export function getRuntimeConfig(
       (config.PAYOUT_INDEXER_CRON_SECRET?.length ?? 0) >= 32,
       "CRON_SECRET_TOO_SHORT",
     );
+    requireConfigured(
+      !config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS ||
+        config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS.length >= 32,
+      "CRON_PREVIOUS_SECRET_TOO_SHORT",
+    );
   } else {
     requireConfigured(
       indexerSettings.every((value) => value === undefined),
+      "PAYOUT_INDEXER_DISABLED_WITH_CONFIGURATION",
+    );
+    requireConfigured(
+      config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS === undefined,
       "PAYOUT_INDEXER_DISABLED_WITH_CONFIGURATION",
     );
   }
@@ -300,6 +331,7 @@ export function getRuntimeConfig(
       mode: attestationMode,
       contractConfigured: Boolean(config.ATTESTATION_CONTRACT_ID),
       protocolConfigured,
+      approvedWasmHashes,
     },
     payoutIndexer: { enabled: config.PAYOUT_INDEXER_ENABLED },
     sentry: { enabled: config.SENTRY_ENABLED },

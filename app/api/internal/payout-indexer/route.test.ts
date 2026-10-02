@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
     ATTESTATION_CONTRACT_ID: "contract-id",
     CHW_INCENTIVE_POOL_ADDRESS: "pool-address",
     PAYOUT_INDEXER_CRON_SECRET: "test-cron-secret",
+    PAYOUT_INDEXER_CRON_SECRET_PREVIOUS: "previous-test-cron-secret",
     PAYOUT_INDEXER_START_LEDGER: 100,
     PAYOUT_INDEXER_START_PAYMENT_CURSOR: "0",
     SOROBAN_RPC_URL: "https://rpc.example",
@@ -86,6 +87,24 @@ describe("POST /api/internal/payout-indexer", () => {
     expect(mocks.runOnce).not.toHaveBeenCalled();
   });
 
+  it("accepts the previous secret during a rotation window", async () => {
+    mocks.getRuntimeConfig.mockReturnValue(enabledConfig());
+    mocks.runOnce.mockResolvedValue({ payments: 0 });
+
+    const request = new Request(
+      "http://localhost/api/internal/payout-indexer",
+      {
+        method: "POST",
+        headers: { authorization: "Bearer previous-test-cron-secret" },
+      },
+    );
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(mocks.runOnce).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects a call bearing an incorrect/forged secret", async () => {
     mocks.getRuntimeConfig.mockReturnValue(enabledConfig());
 
@@ -94,6 +113,23 @@ describe("POST /api/internal/payout-indexer", () => {
       {
         method: "POST",
         headers: { authorization: "Bearer wrong-secret" },
+      },
+    );
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(401);
+    expect(mocks.runOnce).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed Authorization headers without running the indexer", async () => {
+    mocks.getRuntimeConfig.mockReturnValue(enabledConfig());
+
+    const request = new Request(
+      "http://localhost/api/internal/payout-indexer",
+      {
+        method: "POST",
+        headers: { authorization: "Bearer test-cron-secret extra" },
       },
     );
 
