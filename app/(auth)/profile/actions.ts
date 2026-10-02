@@ -35,6 +35,7 @@ import {
 import { serverEnv } from "@/lib/env-server";
 import { logError } from "@/lib/logging/logger";
 import { getBaseUrl } from "@/lib/url/getBaseUrl";
+import { withIdempotency } from "@/lib/idempotency/withIdempotency";
 
 export interface ProfileFormState {
   error?: string;
@@ -60,16 +61,27 @@ export type CapabilityShareState = {
  */
 export async function createEmergencyCapability(
   _previous: CapabilityShareState | undefined,
-  _formData: FormData,
+  formData: FormData,
 ): Promise<CapabilityShareState> {
   void _previous;
-  void _formData;
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { error: "You must be signed in." };
 
+  return withIdempotency(
+    { formData, action: "createEmergencyCapability" },
+    async () => {
+      return _createEmergencyCapabilityImpl(user.id);
+    },
+  );
+}
+
+async function _createEmergencyCapabilityImpl(
+  _userId: string,
+): Promise<CapabilityShareState> {
+  const supabase = await createClient();
   const rawCapability = createRawCapability();
   // Stay below the database's 180-day hard ceiling to tolerate small
   // application/database clock differences without weakening the policy.
@@ -317,7 +329,6 @@ export async function regenerateCardId(
   _prevState: { error?: string } | undefined,
   formData: FormData,
 ): Promise<{ error?: string }> {
-  void formData;
   const supabase = await createClient();
   const {
     data: { user },
@@ -327,30 +338,41 @@ export async function regenerateCardId(
     return { error: "You must be signed in." };
   }
 
-  const { data: current } = await supabase
-    .from("profiles")
-    .select("card_public_id")
-    .eq("user_id", user.id)
-    .maybeSingle();
-  const newId = crypto.randomUUID();
+  return withIdempotency(
+    {
+      formData,
+      action: "regenerateCardId",
+      // The card_public_id written to the DB is generated server-side, so
+      // the only meaningful payload field is the user's intent (the form
+      // itself has no variable fields beyond the idempotency key).
+    },
+    async () => {
+      const { data: current } = await supabase
+        .from("profiles")
+        .select("card_public_id")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      const newId = crypto.randomUUID();
 
-  const { error } = await supabase
-    .from("profiles")
-    .update({ card_public_id: newId })
-    .eq("user_id", user.id);
+      const { error } = await supabase
+        .from("profiles")
+        .update({ card_public_id: newId })
+        .eq("user_id", user.id);
 
-  if (error) {
-    logError("Failed to regenerate card id", error, {
-      route: "/profile (action: regenerateCardId)",
-    });
-    return { error: "Could not regenerate your QR code. Please try again." };
-  }
+      if (error) {
+        logError("Failed to regenerate card id", error, {
+          route: "/profile (action: regenerateCardId)",
+        });
+        return { error: "Could not regenerate your QR code. Please try again." };
+      }
 
-  revalidatePath("/profile");
-  if (current?.card_public_id)
-    revalidatePath(`/card/${current.card_public_id}`);
-  revalidatePath(`/card/${newId}`);
-  return {};
+      revalidatePath("/profile");
+      if (current?.card_public_id)
+        revalidatePath(`/card/${current.card_public_id}`);
+      revalidatePath(`/card/${newId}`);
+      return {};
+    },
+  );
 }
 
 export async function recordConsentChoice(formData: FormData): Promise<void> {
