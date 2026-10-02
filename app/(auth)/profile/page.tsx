@@ -111,7 +111,37 @@ async function checkAttestationStaleness(
   }
 }
 
-export default async function ProfilePage() {
+/**
+ * Static shell: navigation, headings and help text that do not depend on
+ * the authenticated user. Rendered as part of the prerendered shell so it
+ * streams instantly while the user-specific sections below resolve behind
+ * Suspense boundaries.
+ */
+function ProfileShellHeader() {
+  return (
+    <div className="flex items-center justify-between">
+      <div>
+        <h1 className="text-2xl font-semibold text-zinc-950 dark:text-zinc-50">
+          Your Lafiya card
+        </h1>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          Manage your emergency card, sharing and privacy settings.
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        <ThemeToggle />
+        <SignOutButton />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * User-specific sections. Each boundary reads the authenticated user's own
+ * data via the request-scoped Supabase client, so nothing here is cached
+ * across users — the shell above is the only prerendered part.
+ */
+async function ProfileContent() {
   const supabase = await createClient();
   const {
     data: { user },
@@ -132,7 +162,7 @@ export default async function ProfilePage() {
 
   const { stale, pendingRequestExists, secretMissing } = profile
     ? await checkAttestationStaleness(supabase, profile)
-    : { stale: false, pendingRequestExists: false };
+    : { stale: false, pendingRequestExists: false, secretMissing: false };
   const { data: consentEvents } = await supabase
     .from("consent_events")
     .select("*")
@@ -167,20 +197,14 @@ export default async function ProfilePage() {
     : { data: null };
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 px-6 py-16">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-zinc-950 dark:text-zinc-50">
-            {profile ? profile.name : "Your Lafiya card"}
-          </h1>
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">
-            {user.email}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <ThemeToggle />
-          <SignOutButton />
-        </div>
+    <>
+      <div>
+        <h2 className="text-lg font-semibold text-zinc-950 dark:text-zinc-50">
+          {profile ? profile.name : "Your Lafiya card"}
+        </h2>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          {user.email}
+        </p>
       </div>
 
       {profile ? (
@@ -251,24 +275,23 @@ export default async function ProfilePage() {
         <AttestationStatusBanner pendingRequestExists={pendingRequestExists} />
       ) : null}
 
-      {latestRevision ? (
+      {secretMissing ? <MissingSecretBanner /> : null}
+
+      {profile ? (
         <LastChangeNotice
-          latest={latestRevision}
+          latest={latestRevision ?? null}
           previous={previousRevision ?? null}
         />
       ) : null}
 
-      <ProfileForm profile={profile} userId={user.id} />
+      {profile ? <ProfileForm profile={profile} /> : null}
 
-      {profile?.current_revision_id ? (
-        <PrivacyControls
-          revisionId={profile.current_revision_id}
-          policy={profile.disclosure_policy}
-          events={consentEvents ?? []}
-        />
-      ) : null}
+      <PrivacyControls consentEvents={consentEvents ?? []} />
 
-      <hr className="border-zinc-200 dark:border-zinc-800" />
+      <DeleteAccountButton />
+    </>
+  );
+}
 
       <div className="flex flex-col gap-4">
         <h2 className="text-sm font-medium text-red-600 dark:text-red-400">
