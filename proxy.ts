@@ -16,10 +16,19 @@ import type { Database } from "@/lib/supabase/types";
 const PROTECTED_PREFIXES = ["/profile"];
 const AUTH_ONLY_PATHS = ["/signin", "/signup"];
 
-// Module scope so it survives across requests handled by this instance.
-const sessionTouchThrottle = createSessionTouchThrottle();
+// Roles are stored in app_metadata, which can only be written by the service
+// role. Never trust user_metadata here — it is user-writable.
+const ADMIN_ROLES = ["operator", "reviewer", "finance"] as const;
 
-export async function proxy(request: NextRequest, event?: NextFetchEvent) {
+function getAdminRoles(user: { app_metadata?: Record<string, unknown> } | null) {
+  const raw = user?.app_metadata?.roles;
+  const roles = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+  return roles.filter((role): role is (typeof ADMIN_ROLES)[number] =>
+    (ADMIN_ROLES as readonly string[]).includes(role),
+  );
+}
+
+export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient<Database>(
@@ -94,6 +103,8 @@ export async function proxy(request: NextRequest, event?: NextFetchEvent) {
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
   const isAuthOnly = AUTH_ONLY_PATHS.includes(pathname);
+  const isAdmin =
+    pathname === "/admin" || pathname.startsWith("/admin/");
 
   if (!user && isProtected) {
     const signInUrl = new URL("/signin", request.url);
@@ -103,6 +114,34 @@ export async function proxy(request: NextRequest, event?: NextFetchEvent) {
 
   if (user && isAuthOnly) {
     return NextResponse.redirect(new URL("/profile", request.url));
+  }
+
+  if (isAdmin) {
+    // Admin routes are never cached and never indexed.
+    response.headers.set("Cache-Control", "private, no-store, max-age=0");
+    response.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
+
+    if (!user) {
+      const signInUrl = new URL("/signin", request.url);
+      signInUrl.searchParams.set("next", pathname);
+      return NextResponse.redirect(signInUrl);
+    }
+
+    // Roles come from app_metadata (service-role-set only). Non-admins are
+    // treated as if the route does not exist.
+    if (getAdminRoles(user).length === 0) {
+      return new NextResponse(null, { status: 404 });
+    }
+
+    // Require AAL2 (MFA) for every admin route. The assurance level is read
+    // from the verified token claims, not from user-controlled input.
+    const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+    if (aal?.currentLevel !== "aal2") {
+      const mfaUrl = new URL("/signin", request.url);
+      mfaUrl.searchParams.set("next", pathname);
+      mfaUrl.searchParams.set("mfa", "required");
+      return NextResponse.redirect(mfaUrl);
+    }
   }
 
   return response;

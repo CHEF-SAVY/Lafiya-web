@@ -14,6 +14,9 @@ vi.mock("@/lib/runtime-config", () => ({
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: mocks.createAdminClient,
 }));
+vi.mock("@/lib/stellar/verification-indexer/trust-state", () => ({
+  getContractTrustState: vi.fn().mockResolvedValue("trusted"),
+}));
 vi.mock("@/lib/env-server", () => ({
   serverEnv: { SOROBAN_RPC_URL: "https://soroban-rpc.example" },
 }));
@@ -67,6 +70,7 @@ describe("readiness route", () => {
         supabase: "ok",
         stellar: "ok",
         attestation: "live",
+        attestationGovernance: "trusted",
         payoutIndexer: "enabled",
         sentry: "enabled",
         rpcEndpoints: { policy: "allowlist", resolution: "verified" },

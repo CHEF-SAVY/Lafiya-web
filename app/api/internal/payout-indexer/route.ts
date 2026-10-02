@@ -41,12 +41,10 @@ function configured() {
   return {
     contractId: ATTESTATION_CONTRACT_ID,
     poolAddress: CHW_INCENTIVE_POOL_ADDRESS,
-    // Current first, then the optional previous secret that stays valid for
-    // the rotation window (docs/operations/cron-secret-rotation.md).
     cronSecrets: [
       PAYOUT_INDEXER_CRON_SECRET,
       PAYOUT_INDEXER_CRON_SECRET_PREVIOUS,
-    ],
+    ].filter((secret): secret is string => Boolean(secret)),
     startLedger: PAYOUT_INDEXER_START_LEDGER,
     rpcUrl: SOROBAN_RPC_URL,
     horizonUrl: STELLAR_HORIZON_URL,

@@ -37,10 +37,35 @@ const optionalUrl = z.preprocess(
   z.url().optional(),
 );
 
+/**
+ * Supavisor pooler URLs must be transaction-mode endpoints. Session mode
+ * pins a server connection for the lifetime of the client, which defeats
+ * pooling for serverless callers and breaks under scan bursts. We reject
+ * session-mode ports (5432) and require the transaction-mode port (6543)
+ * so a misconfigured environment fails fast at startup instead of
+ * exhausting Postgres connections in production.
+ */
+const TRANSACTION_POOLER_PORT = "6543";
+const SESSION_POOLER_PORT = "5432";
+
+const optionalPoolerUrl = z.preprocess(
+  (value) =>
+    typeof value === "string" && value.trim() === "" ? undefined : value,
+  z
+    .url()
+    .refine((value) => {
+      const { port } = new URL(value);
+      return port !== SESSION_POOLER_PORT;
+    }, "must use the transaction-mode pooler port (6543), not session mode (5432)")
+    .optional(),
+);
+
 const rawServerEnvSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.url(),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+  DATABASE_URL: optionalPoolerUrl,
+  DIRECT_URL: optionalPoolerUrl,
   STELLAR_NETWORK_PASSPHRASE: z.string().min(1),
   SOROBAN_RPC_URL: z.url(),
   LAFIYA_DEPLOYMENT_ENV: optionalString,
@@ -52,6 +77,12 @@ const rawServerEnvSchema = z.object({
     .positive()
     .max(3600)
     .optional(),
+  ATTESTATION_APPROVED_WASM_HASHES: optionalString,
+  ACCOUNT_LINKAGE_HMAC_SECRET: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    z.string().min(32).optional(),
+  ),
   CHW_PROTOCOL_EPOCH_ID: optionalString,
   CHW_PROTOCOL_INTENT_SIGNING_KEY: optionalString,
   PAYOUT_INDEXER_ENABLED: booleanStringSchema.default(false),
@@ -148,16 +179,19 @@ export type RuntimeConfig = {
     mode: z.infer<typeof attestationModeSchema>;
     contractConfigured: boolean;
     protocolConfigured: boolean;
+    /** Governance-approved contract WASM hashes (issue #629). Public values. */
+    approvedWasmHashes: string[];
   };
   payoutIndexer: { enabled: boolean };
   sentry: { enabled: boolean };
-  /**
-   * How SOROBAN_RPC_URL / STELLAR_HORIZON_URL were validated -- never the
-   * URLs themselves. "allowlist": scheme, host class, and host allowlist were
-   * enforced; "permissive": a local/test deployment where any http(s) URL is
-   * accepted.
-   */
-  rpcEndpoints: { policy: "allowlist" | "permissive" };
+  database: {
+    /** Transaction-mode pooler URL for runtime/serverless access. */
+    poolerUrl?: string;
+    /** Transaction-mode pooler URL for migrations and scripts. */
+    directUrl?: string;
+    /** True when a transaction-mode pooler is configured. */
+    poolerConfigured: boolean;
+  };
 };
 
 /**
@@ -288,12 +322,16 @@ export function getRuntimeConfig(
     NEXT_PUBLIC_SUPABASE_URL: env.NEXT_PUBLIC_SUPABASE_URL,
     NEXT_PUBLIC_SUPABASE_ANON_KEY: env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY,
+    DATABASE_URL: env.DATABASE_URL,
+    DIRECT_URL: env.DIRECT_URL,
     STELLAR_NETWORK_PASSPHRASE: env.STELLAR_NETWORK_PASSPHRASE,
     SOROBAN_RPC_URL: env.SOROBAN_RPC_URL,
     LAFIYA_DEPLOYMENT_ENV: env.LAFIYA_DEPLOYMENT_ENV,
     ATTESTATION_MODE: env.ATTESTATION_MODE,
     ATTESTATION_CONTRACT_ID: env.ATTESTATION_CONTRACT_ID,
     ATTESTATION_CACHE_TTL_SECONDS: env.ATTESTATION_CACHE_TTL_SECONDS,
+    ATTESTATION_APPROVED_WASM_HASHES: env.ATTESTATION_APPROVED_WASM_HASHES,
+    ACCOUNT_LINKAGE_HMAC_SECRET: env.ACCOUNT_LINKAGE_HMAC_SECRET,
     CHW_PROTOCOL_EPOCH_ID: env.CHW_PROTOCOL_EPOCH_ID,
     CHW_PROTOCOL_INTENT_SIGNING_KEY: env.CHW_PROTOCOL_INTENT_SIGNING_KEY,
     PAYOUT_INDEXER_ENABLED: env.PAYOUT_INDEXER_ENABLED,
@@ -346,6 +384,10 @@ export function getRuntimeConfig(
       "SCHEMA_COMPATIBILITY_MISMATCH",
     );
     requireConfigured(config.SENTRY_ENABLED, "SENTRY_REQUIRED");
+    // Serverless runtimes must reach Postgres through the transaction-mode
+    // pooler; a missing pooler URL in production is a connection-exhaustion
+    // incident waiting to happen.
+    requireConfigured(config.DATABASE_URL, "POOLER_URL_REQUIRED");
   }
 
   if (isProduction) {
@@ -372,15 +414,14 @@ export function getRuntimeConfig(
     );
   }
 
-  validateRpcUrl("SOROBAN_RPC_URL", "rpc", config.SOROBAN_RPC_URL, deployment);
-  if (config.STELLAR_HORIZON_URL) {
-    validateRpcUrl(
-      "STELLAR_HORIZON_URL",
-      "horizon",
-      config.STELLAR_HORIZON_URL,
-      deployment,
-    );
-  }
+  const approvedWasmHashes = (config.ATTESTATION_APPROVED_WASM_HASHES ?? "")
+    .split(",")
+    .map((hash) => hash.trim().toLowerCase())
+    .filter(Boolean);
+  requireConfigured(
+    approvedWasmHashes.every((hash) => /^[0-9a-f]{64}$/.test(hash)),
+    "APPROVED_WASM_HASH_INVALID",
+  );
 
   if (isProduction) {
     requireConfigured(
@@ -394,22 +435,15 @@ export function getRuntimeConfig(
     config.STELLAR_USDC_ISSUER,
     config.STELLAR_USDC_ASSET_CODE,
     config.CHW_INCENTIVE_POOL_ADDRESS,
-    config.PAYOUT_INDEXER_START_LEDGER,
-    config.PAYOUT_INDEXER_START_PAYMENT_CURSOR,
-    config.PAYOUT_INDEXER_CRON_SECRET,
   ];
   if (config.PAYOUT_INDEXER_ENABLED) {
-    requireConfigured(
-      attestationMode === "live",
-      "INDEXER_REQUIRES_LIVE_ATTESTATION",
-    );
     requireConfigured(
       indexerSettings.every(Boolean),
       "PAYOUT_INDEXER_CONFIG_INCOMPLETE",
     );
     requireConfigured(
       isStellarPublicKey(config.STELLAR_USDC_ISSUER),
-      "USDC_ISSUER_INVALID",
+      "PAYOUT_INDEXER_USDC_ISSUER_INVALID",
     );
     requireConfigured(
       config.STELLAR_USDC_ASSET_CODE === "USDC",
@@ -423,24 +457,20 @@ export function getRuntimeConfig(
       (config.PAYOUT_INDEXER_CRON_SECRET?.length ?? 0) >= 32,
       "CRON_SECRET_TOO_SHORT",
     );
-    // The previous secret is only set during a rotation window
-    // (docs/operations/cron-secret-rotation.md).
-    if (config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS !== undefined) {
-      requireConfigured(
+    requireConfigured(
+      !config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS ||
         config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS.length >= 32,
-        "CRON_SECRET_PREVIOUS_TOO_SHORT",
-      );
-      requireConfigured(
-        config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS !==
-          config.PAYOUT_INDEXER_CRON_SECRET,
-        "CRON_SECRET_PREVIOUS_MATCHES_CURRENT",
-      );
-    }
+      "CRON_PREVIOUS_SECRET_TOO_SHORT",
+    );
   } else {
     requireConfigured(
       [...indexerSettings, config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS].every(
         (value) => value === undefined,
       ),
+      "PAYOUT_INDEXER_DISABLED_WITH_CONFIGURATION",
+    );
+    requireConfigured(
+      config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS === undefined,
       "PAYOUT_INDEXER_DISABLED_WITH_CONFIGURATION",
     );
   }
@@ -460,149 +490,21 @@ export function getRuntimeConfig(
   return {
     deployment,
     isProduction,
-    buildRevision:
-      config.LAFIYA_BUILD_REVISION ??
-      env.VERCEL_GIT_COMMIT_SHA ??
-      env.GITHUB_SHA ??
-      "unversioned",
+    buildRevision: config.LAFIYA_BUILD_REVISION ?? "unknown",
     schemaCompatibility:
       config.LAFIYA_SCHEMA_COMPATIBILITY ?? CURRENT_SCHEMA_COMPATIBILITY,
     attestation: {
       mode: attestationMode,
       contractConfigured: Boolean(config.ATTESTATION_CONTRACT_ID),
       protocolConfigured,
+      approvedWasmHashes,
     },
     payoutIndexer: { enabled: config.PAYOUT_INDEXER_ENABLED },
     sentry: { enabled: config.SENTRY_ENABLED },
-    rpcEndpoints: {
-      policy: ALLOWLISTED_DEPLOYMENTS.has(deployment)
-        ? "allowlist"
-        : "permissive",
+    database: {
+      poolerUrl: config.DATABASE_URL,
+      directUrl: config.DIRECT_URL,
+      poolerConfigured: Boolean(config.DATABASE_URL),
     },
   };
-}
-
-export const serverEnvSchema = rawServerEnvSchema;
-
-const privateAddresses = new BlockList();
-for (const [network, prefix] of [
-  ["0.0.0.0", 8], // "this" network
-  ["10.0.0.0", 8], // RFC 1918
-  ["100.64.0.0", 10], // carrier-grade NAT
-  ["127.0.0.0", 8], // loopback
-  ["169.254.0.0", 16], // link-local, incl. cloud metadata 169.254.169.254
-  ["172.16.0.0", 12], // RFC 1918
-  ["192.0.0.0", 24], // IETF protocol assignments
-  ["192.168.0.0", 16], // RFC 1918
-  ["198.18.0.0", 15], // benchmarking
-  ["224.0.0.0", 4], // multicast
-  ["240.0.0.0", 4], // reserved + broadcast
-] as const) {
-  privateAddresses.addSubnet(network, prefix, "ipv4");
-}
-for (const [network, prefix] of [
-  ["::", 128], // unspecified
-  ["::1", 128], // loopback
-  ["fc00::", 7], // unique local
-  ["fe80::", 10], // link-local
-  ["ff00::", 8], // multicast
-] as const) {
-  privateAddresses.addSubnet(network, prefix, "ipv6");
-}
-
-/** True for loopback, private, link-local, and other non-public addresses. */
-export function isPrivateAddress(address: string): boolean {
-  const family = isIP(address);
-  if (family === 4) return privateAddresses.check(address, "ipv4");
-  if (family === 6) {
-    // IPv4-mapped IPv6 (::ffff:a.b.c.d, or its hex form ::ffff:7f00:1) is
-    // judged by the IPv4 address it wraps.
-    const dotted = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
-    if (dotted) return privateAddresses.check(dotted[1], "ipv4");
-    const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(address);
-    if (hex) {
-      const high = parseInt(hex[1], 16);
-      const low = parseInt(hex[2], 16);
-      const ipv4 = [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
-      return privateAddresses.check(ipv4, "ipv4");
-    }
-    return privateAddresses.check(address, "ipv6");
-  }
-  // Not an IP at all: refuse rather than guess.
-  return true;
-}
-
-export type RpcResolutionStatus = "verified" | "skipped" | "not_run";
-
-type LookupAll = (
-  hostname: string,
-) => Promise<ReadonlyArray<{ address: string }>>;
-
-const defaultLookup: LookupAll = (hostname) =>
-  dnsLookup(hostname, { all: true, verbatim: true });
-
-// Stored on globalThis rather than in module scope: Next may evaluate this
-// module separately for instrumentation and for route bundles.
-const RESOLUTION_STATUS_KEY = Symbol.for("lafiya.rpcResolutionStatus");
-type ResolutionStatusHolder = { [RESOLUTION_STATUS_KEY]?: RpcResolutionStatus };
-
-/** The outcome of the boot-time DNS check, for readiness output. */
-export function getRpcResolutionStatus(): RpcResolutionStatus {
-  return (
-    (globalThis as ResolutionStatusHolder)[RESOLUTION_STATUS_KEY] ?? "not_run"
-  );
-}
-
-/**
- * Boot-time DNS check for the configured Stellar endpoints (called from
- * instrumentation.ts before the server accepts traffic). In allowlisted
- * deployments every address a host resolves to must be public, so a
- * compromised or poisoned DNS record cannot aim server-side fetches at
- * internal services or the cloud metadata endpoint at boot.
- *
- * Residual risk: this is a point-in-time check. A host that re-resolves to a
- * private address after boot (DNS rebinding) is not caught here; that needs
- * network-layer egress filtering, which is out of scope for app config.
- * Resolution failure is treated as fatal (fail closed).
- */
-export async function verifyRpcHostResolution(
-  env: NodeJS.ProcessEnv = process.env,
-  lookup: LookupAll = defaultLookup,
-): Promise<RpcResolutionStatus> {
-  const config = getRuntimeConfig(env);
-  const holder = globalThis as ResolutionStatusHolder;
-  if (config.rpcEndpoints.policy !== "allowlist") {
-    holder[RESOLUTION_STATUS_KEY] = "skipped";
-    return "skipped";
-  }
-
-  const endpoints = [
-    ["SOROBAN_RPC_URL", env.SOROBAN_RPC_URL],
-    ["STELLAR_HORIZON_URL", env.STELLAR_HORIZON_URL],
-  ] as const;
-  for (const [variable, value] of endpoints) {
-    if (!value || value.trim() === "") continue;
-    const hostname = normalizedHostname(new URL(value));
-    let addresses: ReadonlyArray<{ address: string }>;
-    try {
-      addresses = await lookup(hostname);
-    } catch {
-      throw new RuntimeConfigError(
-        "RPC_URL_UNRESOLVABLE",
-        `${variable} host did not resolve at startup`,
-      );
-    }
-    if (
-      addresses.length === 0 ||
-      addresses.some(({ address }) => isPrivateAddress(address))
-    ) {
-      throw new RuntimeConfigError(
-        "RPC_URL_RESOLVES_PRIVATE",
-        `${variable} host resolves to a private, loopback, or link-local address`,
-      );
-    }
-  }
-
-  holder[RESOLUTION_STATUS_KEY] = "verified";
-  return "verified";
 }

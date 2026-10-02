@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { headers } from "next/headers";
+import Link from "next/link";
 
 import { computeRecordHash } from "@/lib/attestation/recordHash";
 import { getSecretByUserId } from "@/lib/attestation/recordSecret";
@@ -115,41 +115,36 @@ async function checkAttestationStaleness(
 }
 
 /**
- * The signed-in user's active sessions for the sessions panel (#523). RLS
- * limits the select to the caller's own rows. If this device is not listed
- * yet (proxy.ts records last-seen in the background after the response), it
- * is recorded here first so the panel always shows "This device".
+ * Static shell: navigation, headings and help text that do not depend on
+ * the authenticated user. Rendered as part of the prerendered shell so it
+ * streams instantly while the user-specific sections below resolve behind
+ * Suspense boundaries.
  */
-async function loadSessions(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-): Promise<SessionListItem[]> {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  const currentId = sessionIdFromAccessToken(session?.access_token);
-
-  const select = () =>
-    supabase
-      .from("user_sessions")
-      .select("session_id, browser, os, created_at, last_seen_at")
-      .order("last_seen_at", { ascending: false });
-
-  let { data } = await select();
-  if (currentId && !data?.some((row) => row.session_id === currentId)) {
-    const { browser, os } = coarseUserAgent(
-      (await headers()).get("user-agent"),
-    );
-    await supabase.rpc("touch_my_session", { p_browser: browser, p_os: os });
-    ({ data } = await select());
-  }
-
-  return (data ?? []).map((row) => ({
-    ...row,
-    current: row.session_id === currentId,
-  }));
+function ProfileShellHeader() {
+  return (
+    <div className="flex items-center justify-between">
+      <div>
+        <h1 className="text-2xl font-semibold text-zinc-950 dark:text-zinc-50">
+          Your Lafiya card
+        </h1>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          Manage your emergency card, sharing and privacy settings.
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        <ThemeToggle />
+        <SignOutButton />
+      </div>
+    </div>
+  );
 }
 
-export default async function ProfilePage() {
+/**
+ * User-specific sections. Each boundary reads the authenticated user's own
+ * data via the request-scoped Supabase client, so nothing here is cached
+ * across users — the shell above is the only prerendered part.
+ */
+async function ProfileContent() {
   const supabase = await createClient();
   const {
     data: { user },
@@ -170,7 +165,7 @@ export default async function ProfilePage() {
 
   const { stale, pendingRequestExists, secretMissing } = profile
     ? await checkAttestationStaleness(supabase, profile)
-    : { stale: false, pendingRequestExists: false };
+    : { stale: false, pendingRequestExists: false, secretMissing: false };
   const { data: consentEvents } = await supabase
     .from("consent_events")
     .select("*")
@@ -178,6 +173,9 @@ export default async function ProfilePage() {
     .order("occurred_at", { ascending: false });
   const { data: accessSummary } = await supabase.rpc(
     "get_my_card_access_summary",
+  );
+  const { data: pinAccessSummary } = await supabase.rpc(
+    "get_my_card_pin_access_summary",
   );
   const { data: recentRevisions } = profile
     ? await supabase
@@ -203,20 +201,14 @@ export default async function ProfilePage() {
   const sessions = await loadSessions(supabase);
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 px-6 py-16">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-zinc-950 dark:text-zinc-50">
-            {profile ? profile.name : "Your Lafiya card"}
-          </h1>
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">
-            {user.email}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <ThemeToggle />
-          <SignOutButton />
-        </div>
+    <>
+      <div>
+        <h2 className="text-lg font-semibold text-zinc-950 dark:text-zinc-50">
+          {profile ? profile.name : "Your Lafiya card"}
+        </h2>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          {user.email}
+        </p>
       </div>
 
       {profile ? (
@@ -226,8 +218,8 @@ export default async function ProfilePage() {
             legacySunsetAt={profile.legacy_card_sunset_at}
           />
           <p className="text-xs text-zinc-500 dark:text-zinc-500">
-            Preview shows your last-saved public card. Unsaved draft changes
-            are not reflected until you save.
+            Preview shows your last-saved public card. Unsaved draft changes are
+            not reflected until you save.
           </p>
           <div className="flex flex-wrap gap-3">
             <PreviewCardButton
@@ -254,36 +246,56 @@ export default async function ProfilePage() {
       ) : null}
 
       {profile ? (
-        <CapabilitySharePanel activeCapabilities={activeCapabilities ?? []} />
+        <CapabilitySharePanel
+          activeCapabilities={activeCapabilities ?? []}
+          printableCard={
+            profile
+              ? {
+                  name: profile.name,
+                  age: null,
+                  blood_group: profile.blood_group,
+                  genotype: profile.genotype,
+                  allergies: profile.allergies,
+                  medications: profile.medications,
+                  chronic_conditions: profile.chronic_conditions,
+                  emergency_contacts: profile.emergency_contacts,
+                  language: profile.language,
+                  record_updated_at: profile.updated_at,
+                }
+              : undefined
+          }
+        />
       ) : null}
 
       <AccessSummary
         viewsLast30Days={accessSummary?.[0]?.views_last_30_days ?? 0}
         lastViewedAt={accessSummary?.[0]?.last_viewed_at ?? null}
+        pinSuccesses={pinAccessSummary?.[0]?.pin_successes_30d ?? 0}
+        pinFailures={pinAccessSummary?.[0]?.pin_failures_30d ?? 0}
+        lastPinFailureAt={pinAccessSummary?.[0]?.last_pin_failure_at ?? null}
       />
 
       {stale ? (
         <AttestationStatusBanner pendingRequestExists={pendingRequestExists} />
       ) : null}
 
-      {latestRevision ? (
+      {secretMissing ? <MissingSecretBanner /> : null}
+
+      {profile ? (
         <LastChangeNotice
-          latest={latestRevision}
+          latest={latestRevision ?? null}
           previous={previousRevision ?? null}
         />
       ) : null}
 
-      <ProfileForm profile={profile} userId={user.id} />
+      {profile ? <ProfileForm profile={profile} /> : null}
 
-      {profile?.current_revision_id ? (
-        <PrivacyControls
-          revisionId={profile.current_revision_id}
-          policy={profile.disclosure_policy}
-          events={consentEvents ?? []}
-        />
-      ) : null}
+      <PrivacyControls consentEvents={consentEvents ?? []} />
 
-      <hr className="border-zinc-200 dark:border-zinc-800" />
+      <DeleteAccountButton />
+    </>
+  );
+}
 
       <SessionsPanel sessions={sessions} />
 
@@ -293,6 +305,12 @@ export default async function ProfilePage() {
         <h2 className="text-sm font-medium text-red-600 dark:text-red-400">
           Danger zone
         </h2>
+        <Link
+          href="/profile/merge"
+          className="text-sm text-zinc-700 underline dark:text-zinc-300"
+        >
+          Have a duplicate account? Merge it into this one
+        </Link>
         <DeleteAccountButton />
       </div>
     </div>

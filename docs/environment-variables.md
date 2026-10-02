@@ -98,8 +98,8 @@ All-or-nothing group: set `PAYOUT_INDEXER_ENABLED=true` only when every variable
 | `CHW_INCENTIVE_POOL_ADDRESS` | Conditional | No | Stellar account address (G…) whose outgoing USDC payments are indexed as CHW payouts. | _(your pool account address)_ |
 | `PAYOUT_INDEXER_START_LEDGER` | Conditional | No | Ledger sequence number from which to begin indexing. Used only before durable cursors are established. | `12345678` |
 | `PAYOUT_INDEXER_START_PAYMENT_CURSOR` | Conditional | No | Horizon paging cursor for the first payment to index. Used only before durable cursors are established. | `123456789012345678` |
-| `PAYOUT_INDEXER_CRON_SECRET` | Conditional | **No — secret** | Bearer token for the authenticated `POST /api/internal/payout-indexer` endpoint. Minimum 32 characters. Compared in constant time. | _(generate with `openssl rand -hex 32`)_ |
-| `PAYOUT_INDEXER_CRON_SECRET_PREVIOUS` | Optional | **No — secret** | The secret being retired, accepted alongside the current one **only during a rotation window**. Minimum 32 characters and must differ from the current secret. Leave empty otherwise. See the [rotation runbook](operations/cron-secret-rotation.md). | _(empty)_ |
+| `PAYOUT_INDEXER_CRON_SECRET` | Conditional | **No — secret** | Bearer token for the authenticated `POST /api/internal/payout-indexer` endpoint. Minimum 32 characters. | _(generate with `openssl rand -hex 32`)_ |
+| `PAYOUT_INDEXER_CRON_SECRET_PREVIOUS` | Optional during rotation | **No — secret** | Previous bearer token accepted alongside the current token during a rotation. If set, it must be at least 32 characters. | _(old token during rotation)_ |
 
 ---
 
