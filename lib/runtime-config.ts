@@ -65,6 +65,7 @@ const rawServerEnvSchema = z.object({
   PAYOUT_INDEXER_START_LEDGER: z.coerce.number().int().positive().optional(),
   PAYOUT_INDEXER_START_PAYMENT_CURSOR: optionalString,
   PAYOUT_INDEXER_CRON_SECRET: optionalString,
+  PAYOUT_INDEXER_CRON_SECRET_PREVIOUS: optionalString,
   SENTRY_ENABLED: booleanStringSchema.default(false),
   NEXT_PUBLIC_SENTRY_DSN: optionalUrl,
   SENTRY_DSN: optionalUrl,
@@ -171,6 +172,8 @@ export function getRuntimeConfig(
     PAYOUT_INDEXER_START_PAYMENT_CURSOR:
       env.PAYOUT_INDEXER_START_PAYMENT_CURSOR,
     PAYOUT_INDEXER_CRON_SECRET: env.PAYOUT_INDEXER_CRON_SECRET,
+    PAYOUT_INDEXER_CRON_SECRET_PREVIOUS:
+      env.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS,
     SENTRY_ENABLED: env.SENTRY_ENABLED,
     NEXT_PUBLIC_SENTRY_DSN: env.NEXT_PUBLIC_SENTRY_DSN,
     SENTRY_DSN: env.SENTRY_DSN,
@@ -286,9 +289,18 @@ export function getRuntimeConfig(
       (config.PAYOUT_INDEXER_CRON_SECRET?.length ?? 0) >= 32,
       "CRON_SECRET_TOO_SHORT",
     );
+    requireConfigured(
+      !config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS ||
+        config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS.length >= 32,
+      "CRON_PREVIOUS_SECRET_TOO_SHORT",
+    );
   } else {
     requireConfigured(
       indexerSettings.every((value) => value === undefined),
+      "PAYOUT_INDEXER_DISABLED_WITH_CONFIGURATION",
+    );
+    requireConfigured(
+      config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS === undefined,
       "PAYOUT_INDEXER_DISABLED_WITH_CONFIGURATION",
     );
   }
