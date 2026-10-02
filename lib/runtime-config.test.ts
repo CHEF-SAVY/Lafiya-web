@@ -116,22 +116,46 @@ describe("runtime configuration matrix", () => {
       ),
     ).toThrow("PAYOUT_INDEXER_DISABLED_WITH_CONFIGURATION");
 
+    const completeIndexerEnv: EnvOverrides = {
+      ATTESTATION_MODE: "live",
+      ATTESTATION_CONTRACT_ID: CONTRACT_ID,
+      PAYOUT_INDEXER_ENABLED: "true",
+      STELLAR_HORIZON_URL: "https://horizon-testnet.stellar.org",
+      STELLAR_USDC_ISSUER: PUBLIC_KEY,
+      STELLAR_USDC_ASSET_CODE: "USDC",
+      CHW_INCENTIVE_POOL_ADDRESS: PUBLIC_KEY,
+      PAYOUT_INDEXER_START_LEDGER: "123",
+      PAYOUT_INDEXER_START_PAYMENT_CURSOR: "0",
+      PAYOUT_INDEXER_CRON_SECRET: "a".repeat(32),
+      PAYOUT_INDEXER_CRON_SECRET_PREVIOUS: "b".repeat(32),
+    };
+
+    expect(
+      getRuntimeConfig(baseEnv(completeIndexerEnv)).payoutIndexer,
+    ).toEqual({ enabled: true });
     expect(
       getRuntimeConfig(
         baseEnv({
-          ATTESTATION_MODE: "live",
-          ATTESTATION_CONTRACT_ID: CONTRACT_ID,
-          PAYOUT_INDEXER_ENABLED: "true",
-          STELLAR_HORIZON_URL: "https://horizon-testnet.stellar.org",
-          STELLAR_USDC_ISSUER: PUBLIC_KEY,
-          STELLAR_USDC_ASSET_CODE: "USDC",
-          CHW_INCENTIVE_POOL_ADDRESS: PUBLIC_KEY,
-          PAYOUT_INDEXER_START_LEDGER: "123",
-          PAYOUT_INDEXER_START_PAYMENT_CURSOR: "0",
-          PAYOUT_INDEXER_CRON_SECRET: "a".repeat(32),
+          ...completeIndexerEnv,
+          PAYOUT_INDEXER_CRON_SECRET_PREVIOUS: undefined,
         }),
       ).payoutIndexer,
     ).toEqual({ enabled: true });
+
+    expect(() =>
+      getRuntimeConfig(
+        baseEnv({
+          ...completeIndexerEnv,
+          PAYOUT_INDEXER_CRON_SECRET_PREVIOUS: "short",
+        }),
+      ),
+    ).toThrow("CRON_PREVIOUS_SECRET_TOO_SHORT");
+
+    expect(() =>
+      getRuntimeConfig(
+        baseEnv({ PAYOUT_INDEXER_CRON_SECRET_PREVIOUS: "b".repeat(32) }),
+      ),
+    ).toThrow("PAYOUT_INDEXER_DISABLED_WITH_CONFIGURATION");
   });
 
   it("returns only non-secret readiness configuration", () => {
@@ -145,6 +169,7 @@ describe("runtime configuration matrix", () => {
         mode: "live",
         contractConfigured: true,
         protocolConfigured: true,
+        approvedWasmHashes: [],
       },
       payoutIndexer: { enabled: false },
       sentry: { enabled: true },
@@ -152,6 +177,20 @@ describe("runtime configuration matrix", () => {
     expect(JSON.stringify(config)).not.toContain(
       "managed-signing-key-reference",
     );
+  });
+
+  it("parses the approved attestation WASM hash allowlist (issue #629)", () => {
+    const hash = "A".repeat(64);
+    expect(
+      getRuntimeConfig(
+        productionEnv({ ATTESTATION_APPROVED_WASM_HASHES: ` ${hash}, ` }),
+      ).attestation.approvedWasmHashes,
+    ).toEqual(["a".repeat(64)]);
+    expect(() =>
+      getRuntimeConfig(
+        productionEnv({ ATTESTATION_APPROVED_WASM_HASHES: "not-a-hash" }),
+      ),
+    ).toThrow("APPROVED_WASM_HASH_INVALID");
   });
 });
 

@@ -498,5 +498,8 @@ _Built for the Stellar ecosystem. Open source. Community owned._
 
 ## Handsoff notes
 
-<!-- handsoff-issue-585 -->
-- #585: [Operations] Automate point-in-time-recovery restore drills with data verification
+<!-- handsoff-issue-620 -->
+- #620: [API] Deliver HMAC-signed webhooks to partners for attestation and verification events
+
+<!-- handsoff-issue-623 -->
+- #623: [Architecture] Split `profile/actions.ts` into domain use-cases with ports and adapters
