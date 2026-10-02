@@ -73,18 +73,69 @@ export type EmergencyCapabilityRow = {
   created_at: string;
 };
 
+/** Issue #628: HMAC-keyed duplicate-detection blocking key. */
+export type PatientBlockingKeyRow = {
+  user_id: string;
+  key_type: "phone" | "name_dob";
+  key_hash: string;
+  updated_at: string;
+};
+
+export type AccountMergeRequestRow = {
+  id: string;
+  requester_user_id: string;
+  other_user_id: string | null;
+  status: "pending" | "verified" | "merged" | "cancelled";
+  requester_verified_at: string | null;
+  other_verified_at: string | null;
+  expires_at: string;
+  created_at: string;
+};
+
+export type AccountMergeAuditRow = {
+  id: string;
+  merge_request_id: string;
+  survivor_user_id: string;
+  loser_user_id: string;
+  moved: Record<string, number>;
+  adjusted_obligations: number;
+  merged_at: string;
+};
+
+export type AccountNotificationOutboxRow = {
+  id: string;
+  user_id: string;
+  template: "account_merged_survivor" | "account_merged_loser";
+  reference_id: string;
+  created_at: string;
+  sent_at: string | null;
+};
+
+/** Issue #631: Argon2id hash of a capability's printed card PIN. */
+export type EmergencyCapabilityPinRow = {
+  capability_id: string;
+  pin_hash: string;
+  failed_attempts: number;
+  locked_at: string | null;
+  unlock_digest: string | null;
+  unlock_expires_at: string | null;
+  created_at: string;
+};
+
 export type CardAccessEventRow = {
   id: string;
   user_id: string;
   capability_id: string | null;
   access_kind: "legacy" | "capability";
-  outcome: "served" | "inactive";
+  outcome: "served" | "inactive" | "pin_success" | "pin_failure" | "pin_locked";
   observed_at: string;
 };
 
 export type DisclosurePolicy = {
   version: 1;
   fields: Record<string, boolean>;
+  /** Issue #631: fields that require the printed card PIN. */
+  requires_card_pin?: string[];
 };
 
 export type RecordLifecycleState =
@@ -299,47 +350,37 @@ export type PayoutSettlementRow = {
 };
 
 export type ProtocolIndexerCheckpointRow = {
-  stream: "attestations" | "payments";
+  stream: "attestations" | "payments" | "contract_admin";
   cursor: string;
   ledger_sequence: number | null;
   ledger_hash: string | null;
   updated_at: string;
 };
 
-export type LedgerCheckpointRow = {
-  stream: string;
-  ledger_number: number;
-  confirmed_at: string;
-  last_tx_hash: string | null;
-  updated_at: string;
-};
-
-export type PayoutEvidenceRow = {
-  id: string;
-  record_hash: string;
-  stellar_address: string;
-  ledger_number: number | null;
+export type AttestationContractAdminEventRow = {
+  event_id: string;
+  kind:
+    | "wasm_upgrade"
+    | "admin_transfer"
+    | "allowlist_change"
+    | "pause"
+    | "unpause";
+  contract_id: string;
+  ledger_sequence: number;
   transaction_hash: string;
-  paging_token: string;
-  amount_usdc: number;
-  paid_at: string;
-  decision: string;
-  evidence_recorded_at: string;
-  evidence_checksum: string;
-  created_at: string;
+  wasm_hash: string | null;
+  subject: string | null;
+  action: "added" | "removed" | null;
+  observed_at: string;
+  indexed_at: string;
 };
 
-export type ConflictingObservationRow = {
-  id: string;
-  record_hash: string;
-  conflict_type: string;
-  previous_state: Record<string, unknown> | null;
-  current_state: Record<string, unknown> | null;
-  detected_at: string;
-  resolved: boolean;
-  resolution_notes: string | null;
-  resolved_at: string | null;
-  created_at: string;
+export type AttestationContractTrustStateRow = {
+  singleton: boolean;
+  state: "trusted" | "needs_review" | "paused";
+  wasm_hash: string | null;
+  reason_code: string | null;
+  updated_at: string;
 };
 
 export type ProtocolQuarantineRow = {
@@ -365,7 +406,7 @@ export type EmergencyCardRow = {
   chronic_conditions: string[] | null;
   emergency_contacts: EmergencyContact[] | null;
   language: string | null;
-  disclosure_states: Record<string, "disclosed" | "withheld">;
+  disclosure_states: Record<string, "disclosed" | "withheld" | "pin_required">;
   schema_version: number;
   offline_cache_allowed: boolean;
   trust_state: TrustDecisionRow["state"];
@@ -399,6 +440,30 @@ export type RateLimitRow = {
 export type RateLimitRecordFailureRow = {
   attempts: number;
   blocked_until: string | null;
+};
+
+/** Coarse browser family stored for a session (never a raw user agent). */
+export type SessionBrowserFamily =
+  | "Chrome"
+  | "Edge"
+  | "Firefox"
+  | "Safari"
+  | "Opera"
+  | "Samsung Internet"
+  | "Other";
+
+/** Coarse OS family stored for a session (never a version or device model). */
+export type SessionOsFamily =
+  "Android" | "iOS" | "Windows" | "macOS" | "Linux" | "ChromeOS" | "Other";
+
+/** Row shape of public.user_sessions. See lib/sessions/. */
+export type UserSessionRow = {
+  session_id: string;
+  user_id: string;
+  browser: SessionBrowserFamily;
+  os: SessionOsFamily;
+  created_at: string;
+  last_seen_at: string;
 };
 
 /** Row shape of public.frequency_limits. See lib/frequency-limit.ts. */
@@ -557,6 +622,13 @@ export type Database = {
         Update: Partial<FrequencyLimitRow>;
         Relationships: [];
       };
+      user_sessions: {
+        Row: UserSessionRow;
+        // Written only through touch_my_session() / revoke_my_session().
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
       rate_limits: {
         Row: RateLimitRow;
         Insert: Pick<RateLimitRow, "key"> & Partial<RateLimitRow>;
@@ -693,6 +765,61 @@ export type Database = {
         Update: Partial<Omit<ProtocolIndexerCheckpointRow, "stream">>;
         Relationships: [];
       };
+      attestation_contract_admin_events: {
+        Row: AttestationContractAdminEventRow;
+        Insert: Omit<AttestationContractAdminEventRow, "indexed_at"> &
+          Partial<Pick<AttestationContractAdminEventRow, "indexed_at">>;
+        Update: Partial<AttestationContractAdminEventRow>;
+        Relationships: [];
+      };
+      attestation_contract_trust_state: {
+        Row: AttestationContractTrustStateRow;
+        Insert: Pick<AttestationContractTrustStateRow, "state"> &
+          Partial<AttestationContractTrustStateRow>;
+        Update: Partial<AttestationContractTrustStateRow>;
+        Relationships: [];
+      };
+      patient_blocking_keys: {
+        Row: PatientBlockingKeyRow;
+        Insert: Omit<PatientBlockingKeyRow, "updated_at"> &
+          Partial<Pick<PatientBlockingKeyRow, "updated_at">>;
+        Update: Partial<PatientBlockingKeyRow>;
+        Relationships: [];
+      };
+      account_merge_requests: {
+        Row: AccountMergeRequestRow;
+        Insert: Pick<
+          AccountMergeRequestRow,
+          "requester_user_id" | "other_user_id" | "expires_at"
+        > &
+          Partial<AccountMergeRequestRow>;
+        Update: Partial<
+          Pick<
+            AccountMergeRequestRow,
+            "status" | "requester_verified_at" | "other_verified_at"
+          >
+        >;
+        Relationships: [];
+      };
+      account_merge_audit: {
+        Row: AccountMergeAuditRow;
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      account_notification_outbox: {
+        Row: AccountNotificationOutboxRow;
+        Insert: never;
+        Update: Partial<Pick<AccountNotificationOutboxRow, "sent_at">>;
+        Relationships: [];
+      };
+      emergency_capability_pins: {
+        Row: EmergencyCapabilityPinRow;
+        Insert: Pick<EmergencyCapabilityPinRow, "capability_id" | "pin_hash"> &
+          Partial<EmergencyCapabilityPinRow>;
+        Update: Partial<Omit<EmergencyCapabilityPinRow, "capability_id">>;
+        Relationships: [];
+      };
       protocol_quarantine: {
         Row: ProtocolQuarantineRow;
         Insert: Pick<
@@ -745,9 +872,75 @@ export type Database = {
         Args: {
           p_capability_id: string;
           p_access_kind: "legacy" | "capability";
-          p_outcome: "served" | "inactive";
+          p_outcome:
+            | "served"
+            | "inactive"
+            | "pin_success"
+            | "pin_failure"
+            | "pin_locked";
         };
         Returns: undefined;
+      };
+      find_user_id_by_email: {
+        Args: { p_email: string };
+        Returns: string | null;
+      };
+      count_duplicate_candidates: {
+        Args: { p_user_id: string };
+        Returns: number;
+      };
+      accounts_share_blocking_key: {
+        Args: { p_a: string; p_b: string };
+        Returns: boolean;
+      };
+      recompute_patient_payout_eligibility: {
+        Args: { p_user_id: string };
+        Returns: number;
+      };
+      merge_patient_accounts: {
+        Args: { p_merge_request_id: string; p_survivor_user_id: string };
+        Returns: AccountMergeAuditRow;
+      };
+      get_card_pin_gate: {
+        Args: { p_capability_id: string; p_unlock_digest: string };
+        Returns: {
+          gated_fields: string[];
+          has_pin: boolean;
+          locked: boolean;
+          unlocked: boolean;
+        }[];
+      };
+      get_legacy_card_pin_gated_fields: {
+        Args: { p_card_id: string };
+        Returns: string[];
+      };
+      set_card_pin: {
+        Args: { p_capability_id: string; p_pin_hash: string };
+        Returns: undefined;
+      };
+      begin_card_pin_attempt: {
+        Args: { p_token_digest: string };
+        Returns: {
+          capability_id: string;
+          pin_hash: string | null;
+          allowed: boolean;
+        }[];
+      };
+      complete_card_pin_success: {
+        Args: {
+          p_capability_id: string;
+          p_unlock_digest: string;
+          p_unlock_expires_at: string;
+        };
+        Returns: undefined;
+      };
+      get_my_card_pin_access_summary: {
+        Args: Record<string, never>;
+        Returns: {
+          pin_successes_30d: number;
+          pin_failures_30d: number;
+          last_pin_failure_at: string | null;
+        }[];
       };
       record_legacy_card_access_event: {
         Args: { p_card_id: string };
@@ -789,6 +982,18 @@ export type Database = {
       request_revision_verification: {
         Args: { p_expected_revision_id: string };
         Returns: ReattestationRequestRow;
+      };
+      touch_my_session: {
+        Args: { p_browser: SessionBrowserFamily; p_os: SessionOsFamily };
+        Returns: boolean;
+      };
+      revoke_my_session: {
+        Args: { p_session_id: string };
+        Returns: boolean;
+      };
+      purge_expired_user_sessions: {
+        Args: Record<string, never>;
+        Returns: number;
       };
       rate_limit_record_failure: {
         Args: { p_key: string };

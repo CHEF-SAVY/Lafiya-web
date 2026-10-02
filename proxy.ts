@@ -1,15 +1,37 @@
 import { createServerClient } from "@supabase/ssr";
-import { type NextRequest, NextResponse } from "next/server";
+import {
+  type NextFetchEvent,
+  type NextRequest,
+  NextResponse,
+} from "next/server";
 
 import { clientEnv } from "@/lib/env";
+import {
+  createSessionTouchThrottle,
+  sessionIdFromAccessToken,
+} from "@/lib/sessions/throttle";
+import { coarseUserAgent } from "@/lib/sessions/user-agent";
+import type { Database } from "@/lib/supabase/types";
 
 const PROTECTED_PREFIXES = ["/profile"];
 const AUTH_ONLY_PATHS = ["/signin", "/signup"];
 
+// Roles are stored in app_metadata, which can only be written by the service
+// role. Never trust user_metadata here — it is user-writable.
+const ADMIN_ROLES = ["operator", "reviewer", "finance"] as const;
+
+function getAdminRoles(user: { app_metadata?: Record<string, unknown> } | null) {
+  const raw = user?.app_metadata?.roles;
+  const roles = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+  return roles.filter((role): role is (typeof ADMIN_ROLES)[number] =>
+    (ADMIN_ROLES as readonly string[]).includes(role),
+  );
+}
+
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
 
-  const supabase = createServerClient(
+  const supabase = createServerClient<Database>(
     clientEnv.NEXT_PUBLIC_SUPABASE_URL,
     clientEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     {
@@ -37,6 +59,31 @@ export async function proxy(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
+  if (user) {
+    // Last-seen for the sessions panel (#523). getUser() above has already
+    // verified the token with the Auth server. The session id read here is
+    // only a throttle key: touch_my_session() takes the real one from the
+    // JWT Postgres verifies, and rewrites last_seen_at at most once per
+    // five minutes.
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const sessionId = sessionIdFromAccessToken(session?.access_token);
+    if (sessionId && sessionTouchThrottle.shouldTouch(sessionId)) {
+      const { browser, os } = coarseUserAgent(
+        request.headers.get("user-agent"),
+      );
+      const touch = Promise.resolve(
+        supabase.rpc("touch_my_session", { p_browser: browser, p_os: os }),
+      ).then(
+        () => undefined,
+        // Best effort: a failed last-seen write must never block navigation.
+        () => undefined,
+      );
+      if (event) event.waitUntil(touch);
+    }
+  }
+
   const { pathname } = request.nextUrl;
   const isPublicCard = pathname === "/card" || pathname.startsWith("/card/");
 
@@ -56,6 +103,8 @@ export async function proxy(request: NextRequest) {
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
   const isAuthOnly = AUTH_ONLY_PATHS.includes(pathname);
+  const isAdmin =
+    pathname === "/admin" || pathname.startsWith("/admin/");
 
   if (!user && isProtected) {
     const signInUrl = new URL("/signin", request.url);
@@ -65,6 +114,34 @@ export async function proxy(request: NextRequest) {
 
   if (user && isAuthOnly) {
     return NextResponse.redirect(new URL("/profile", request.url));
+  }
+
+  if (isAdmin) {
+    // Admin routes are never cached and never indexed.
+    response.headers.set("Cache-Control", "private, no-store, max-age=0");
+    response.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
+
+    if (!user) {
+      const signInUrl = new URL("/signin", request.url);
+      signInUrl.searchParams.set("next", pathname);
+      return NextResponse.redirect(signInUrl);
+    }
+
+    // Roles come from app_metadata (service-role-set only). Non-admins are
+    // treated as if the route does not exist.
+    if (getAdminRoles(user).length === 0) {
+      return new NextResponse(null, { status: 404 });
+    }
+
+    // Require AAL2 (MFA) for every admin route. The assurance level is read
+    // from the verified token claims, not from user-controlled input.
+    const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+    if (aal?.currentLevel !== "aal2") {
+      const mfaUrl = new URL("/signin", request.url);
+      mfaUrl.searchParams.set("next", pathname);
+      mfaUrl.searchParams.set("mfa", "required");
+      return NextResponse.redirect(mfaUrl);
+    }
   }
 
   return response;
