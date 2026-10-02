@@ -1,5 +1,8 @@
 import "server-only";
 
+import { lookup as dnsLookup } from "node:dns/promises";
+import { BlockList, isIP } from "node:net";
+
 import { z } from "zod";
 
 const MAINNET_NETWORK_PASSPHRASE =
@@ -100,6 +103,73 @@ const rawServerEnvSchema = z.object({
 
 export type DeploymentEnvironment = z.infer<typeof deploymentSchema>;
 
+/**
+ * Deployments that serve real traffic (or rehearse for it) and therefore only
+ * talk to vetted Stellar infrastructure. Everything else -- development, test,
+ * ci, preview -- keeps a permissive policy so contributors can point at
+ * `http://localhost` or a private RPC.
+ */
+const ALLOWLISTED_DEPLOYMENTS: ReadonlySet<DeploymentEnvironment> = new Set([
+  "staging",
+  "pilot",
+  "production",
+  "mainnet",
+]);
+
+const MAINNET_RPC_HOSTS = [
+  "mainnet.sorobanrpc.com",
+  "soroban-rpc.mainnet.stellar.gateway.fm",
+  "stellar-soroban-public.nodies.app",
+  "rpc.lightsail.network",
+] as const;
+const MAINNET_HORIZON_HOSTS = [
+  "horizon.stellar.org",
+  "horizon.stellar.lobstr.co",
+] as const;
+const TESTNET_RPC_HOSTS = [
+  "soroban-testnet.stellar.org",
+  "soroban-rpc.testnet.stellar.gateway.fm",
+  "stellar-soroban-testnet-public.nodies.app",
+] as const;
+const TESTNET_HORIZON_HOSTS = ["horizon-testnet.stellar.org"] as const;
+
+/**
+ * Vetted RPC/Horizon hosts per allowlisted deployment (exact hostname match,
+ * no wildcards). Keyed by deployment so the list also enforces network
+ * consistency: production/mainnet must run on the mainnet passphrase and only
+ * mainnet hosts are listed for them; staging/pilot must run off-mainnet and
+ * only testnet hosts are listed for them. Providers come from the benchmark
+ * in docs/rpc-provider-benchmark.md. Adding a provider is a reviewed code
+ * change on purpose -- an environment variable could be changed by the same
+ * compromise this list defends against.
+ */
+export const rpcHostAllowlist: Readonly<
+  Partial<
+    Record<
+      DeploymentEnvironment,
+      { rpc: readonly string[]; horizon: readonly string[] }
+    >
+  >
+> = {
+  production: { rpc: MAINNET_RPC_HOSTS, horizon: MAINNET_HORIZON_HOSTS },
+  mainnet: { rpc: MAINNET_RPC_HOSTS, horizon: MAINNET_HORIZON_HOSTS },
+  staging: { rpc: TESTNET_RPC_HOSTS, horizon: TESTNET_HORIZON_HOSTS },
+  pilot: { rpc: TESTNET_RPC_HOSTS, horizon: TESTNET_HORIZON_HOSTS },
+};
+
+/** Hostname suffixes that only ever resolve inside a private network. */
+const PRIVATE_HOST_SUFFIXES = [
+  ".localhost",
+  ".local",
+  ".internal",
+  ".lan",
+  ".intranet",
+  ".corp",
+  ".home.arpa",
+];
+
+type RpcEndpointKind = "rpc" | "horizon";
+
 export type RuntimeConfig = {
   deployment: DeploymentEnvironment;
   isProduction: boolean;
@@ -171,6 +241,72 @@ function isStellarPublicKey(value: string | undefined): boolean {
 
 function isSorobanContractId(value: string | undefined): boolean {
   return value !== undefined && /^C[A-Z2-7]{55}$/.test(value);
+}
+
+function normalizedHostname(url: URL): string {
+  // URL keeps IPv6 literals bracketed ("[::1]") and may keep a trailing dot.
+  return url.hostname
+    .replace(/^\[(.*)\]$/, "$1")
+    .replace(/\.$/, "")
+    .toLowerCase();
+}
+
+function isPrivateHostname(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    // A single-label name resolves through the local search domain only.
+    !hostname.includes(".") ||
+    PRIVATE_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix))
+  );
+}
+
+/**
+ * Validates one configured Stellar endpoint. Throws a value-free
+ * RuntimeConfigError naming the variable (never its value -- a provider URL
+ * can embed an API key in its path).
+ */
+function validateRpcUrl(
+  variable: "SOROBAN_RPC_URL" | "STELLAR_HORIZON_URL",
+  kind: RpcEndpointKind,
+  value: string,
+  deployment: DeploymentEnvironment,
+): void {
+  const url = new URL(value);
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new RuntimeConfigError(
+      "RPC_URL_UNSUPPORTED_SCHEME",
+      `${variable} must be an http(s) URL`,
+    );
+  }
+
+  const allowlist = rpcHostAllowlist[deployment];
+  if (!ALLOWLISTED_DEPLOYMENTS.has(deployment) || !allowlist) return;
+
+  if (url.protocol !== "https:") {
+    throw new RuntimeConfigError(
+      "RPC_URL_INSECURE_SCHEME",
+      `${variable} must use https in the '${deployment}' deployment`,
+    );
+  }
+  const hostname = normalizedHostname(url);
+  if (isIP(hostname) !== 0) {
+    throw new RuntimeConfigError(
+      "RPC_URL_IP_LITERAL",
+      `${variable} must use a DNS hostname, not an IP address, in the '${deployment}' deployment`,
+    );
+  }
+  if (isPrivateHostname(hostname)) {
+    throw new RuntimeConfigError(
+      "RPC_URL_PRIVATE_HOST",
+      `${variable} points at a local or private-network host, which is not allowed in the '${deployment}' deployment`,
+    );
+  }
+  if (!allowlist[kind].includes(hostname)) {
+    throw new RuntimeConfigError(
+      "RPC_URL_HOST_NOT_ALLOWED",
+      `${variable} host is not in rpcHostAllowlist.${deployment}.${kind} (lib/runtime-config.ts)`,
+    );
+  }
 }
 
 /**
@@ -328,7 +464,9 @@ export function getRuntimeConfig(
     );
   } else {
     requireConfigured(
-      indexerSettings.every((value) => value === undefined),
+      [...indexerSettings, config.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS].every(
+        (value) => value === undefined,
+      ),
       "PAYOUT_INDEXER_DISABLED_WITH_CONFIGURATION",
     );
     requireConfigured(

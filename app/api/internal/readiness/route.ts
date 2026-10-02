@@ -67,6 +67,13 @@ export async function GET() {
         attestationGovernance,
         payoutIndexer: config.payoutIndexer.enabled ? "enabled" : "disabled",
         sentry: config.sentry.enabled ? "enabled" : "disabled",
+        // Validation results for SOROBAN_RPC_URL / STELLAR_HORIZON_URL --
+        // the policy that was enforced and the boot-time DNS check outcome,
+        // never the URLs or hosts themselves.
+        rpcEndpoints: {
+          policy: config.rpcEndpoints.policy,
+          resolution: getRpcResolutionStatus(),
+        },
       },
     },
     {

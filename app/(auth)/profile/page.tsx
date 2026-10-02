@@ -8,6 +8,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type { ProfileRow } from "@/lib/supabase/types";
 import { validateAttestation } from "@/lib/stellar/attestation";
+import { sessionIdFromAccessToken } from "@/lib/sessions/throttle";
+import { coarseUserAgent } from "@/lib/sessions/user-agent";
 import { getBaseUrl } from "@/lib/url/getBaseUrl";
 
 import { PreviewCardButton } from "./preview-card-button";
@@ -24,6 +26,7 @@ import { LastChangeNotice, type RevisionSnapshot } from "./last-change-notice";
 import { ProfileForm } from "./profile-form";
 import { PrivacyControls } from "./privacy-controls";
 import { QrCardDisplay } from "./qr-card-display";
+import { SessionsPanel, type SessionListItem } from "./sessions-panel";
 
 export const metadata: Metadata = {
   title: "Your Profile · Lafiya",
@@ -195,6 +198,7 @@ async function ProfileContent() {
         .gt("expires_at", new Date().toISOString())
         .order("issued_at", { ascending: false })
     : { data: null };
+  const sessions = await loadSessions(supabase);
 
   return (
     <>
@@ -292,6 +296,10 @@ async function ProfileContent() {
     </>
   );
 }
+
+      <SessionsPanel sessions={sessions} />
+
+      <hr className="border-zinc-200 dark:border-zinc-800" />
 
       <div className="flex flex-col gap-4">
         <h2 className="text-sm font-medium text-red-600 dark:text-red-400">

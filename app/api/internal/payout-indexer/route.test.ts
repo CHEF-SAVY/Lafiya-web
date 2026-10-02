@@ -158,4 +158,49 @@ describe("POST /api/internal/payout-indexer", () => {
       error: "Payout indexer is not configured",
     });
   });
+
+  describe("secret rotation (#518)", () => {
+    function call(authorization?: string) {
+      return POST(
+        new Request("http://localhost/api/internal/payout-indexer", {
+          method: "POST",
+          headers: authorization === undefined ? {} : { authorization },
+        }),
+      );
+    }
+
+    it.each([
+      ["the current secret", "Bearer test-cron-secret", 200],
+      ["the previous secret", "Bearer previous-cron-secret", 200],
+      ["a wrong secret", "Bearer not-the-secret", 401],
+      ["a prefix of the secret", "Bearer test-cron", 401],
+      ["no header", undefined, 401],
+      ["an empty header", "", 401],
+      ["a bare scheme", "Bearer", 401],
+      ["a non-Bearer scheme", "Basic dGVzdC1jcm9uLXNlY3JldA==", 401],
+      ["the secret without a scheme", "test-cron-secret", 401],
+    ])("responds to %s with %i", async (_label, authorization, status) => {
+      mocks.getRuntimeConfig.mockReturnValue(enabledConfig());
+      mocks.runOnce.mockResolvedValue({});
+
+      const response = await call(authorization);
+
+      expect(response.status).toBe(status);
+      if (status === 401) {
+        expect(await response.json()).toEqual({ error: "Unauthorized" });
+        expect(mocks.runOnce).not.toHaveBeenCalled();
+      }
+    });
+
+    it("stops accepting the previous secret once it is removed", async () => {
+      mocks.getRuntimeConfig.mockReturnValue(enabledConfig());
+      mocks.serverEnv.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS = undefined;
+      try {
+        expect((await call("Bearer previous-cron-secret")).status).toBe(401);
+      } finally {
+        mocks.serverEnv.PAYOUT_INDEXER_CRON_SECRET_PREVIOUS =
+          "previous-cron-secret";
+      }
+    });
+  });
 });
