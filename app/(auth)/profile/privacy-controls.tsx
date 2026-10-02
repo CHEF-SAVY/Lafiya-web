@@ -1,3 +1,4 @@
+import { PIN_GATEABLE_FIELDS } from "@/lib/emergency/card-pin";
 import { formatDateTime } from "@/lib/format/datetime";
 import type { ConsentEventRow, DisclosurePolicy } from "@/lib/supabase/types";
 
@@ -98,6 +99,30 @@ export function PrivacyControls({
                   type="checkbox"
                   name={`field:${field}`}
                   defaultChecked={policy.fields[field]}
+                  className="focus:ring-2 focus:ring-zinc-400 focus:ring-offset-0 dark:focus:ring-zinc-600"
+                />
+                <span>{field.replaceAll("_", " ")}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend className="font-medium">
+            Sensitive fields that require the card PIN
+          </legend>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+            These show only after a responder enters the PIN printed on your
+            physical card. Blood group, genotype, allergies, and emergency
+            contacts always stay visible because responders need them
+            immediately.
+          </p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {PIN_GATEABLE_FIELDS.map((field) => (
+              <label key={field} className="flex gap-2">
+                <input
+                  type="checkbox"
+                  name={`pin:${field}`}
+                  defaultChecked={policy.requires_card_pin?.includes(field)}
                   className="focus:ring-2 focus:ring-zinc-400 focus:ring-offset-0 dark:focus:ring-zinc-600"
                 />
                 <span>{field.replaceAll("_", " ")}</span>

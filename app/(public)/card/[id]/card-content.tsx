@@ -1,5 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
+import type { ReactNode } from "react";
 
 import { formatDateTime } from "@/lib/format/datetime";
 import { OfflineEnvelopeSource } from "@/lib/emergency/offline-source";
@@ -7,8 +8,10 @@ import type { EmergencyCardRow } from "@/lib/supabase/types";
 
 import { VerifiedBadge, type VerificationStatus } from "./verified-badge";
 
-function formatList(values: string[] | null): string {
-  if (values === null) return "Withheld by patient";
+function formatList(values: string[] | null, pinRequired = false): string {
+  if (values === null) {
+    return pinRequired ? "Requires the card PIN" : "Withheld by patient";
+  }
   return values.length > 0 ? values.join(", ") : "None recorded";
 }
 
@@ -46,6 +49,7 @@ function phoneHref(phone: string): string | null {
 export function EmergencyCardContent({
   card,
   authorizationKind,
+  pinGate,
   isOwner = false,
 }: {
   card: EmergencyCardRow;
@@ -55,6 +59,8 @@ export function EmergencyCardContent({
    * user_id to the client (get_emergency_card deliberately never returns
    * it). Never trust this from anywhere but a server-side check. */
   isOwner?: boolean;
+  /** Issue #631: the PIN entry form, shown when fields are PIN-gated. */
+  pinGate?: ReactNode;
 }) {
   const status: VerificationStatus =
     card.trust_state === "unverified"
@@ -184,13 +190,21 @@ export function EmergencyCardContent({
           <CardField label="Allergies" value={formatList(card.allergies)} />
           <CardField
             label="Current medications"
-            value={formatList(card.medications)}
+            value={formatList(
+              card.medications,
+              card.disclosure_states?.medications === "pin_required",
+            )}
           />
           <CardField
             label="Chronic conditions / implants"
-            value={formatList(card.chronic_conditions)}
+            value={formatList(
+              card.chronic_conditions,
+              card.disclosure_states?.chronic_conditions === "pin_required",
+            )}
           />
         </section>
+
+        {pinGate}
 
         {card.emergency_contacts === null ? (
           <CardField label="Emergency contacts" value="Withheld by patient" />

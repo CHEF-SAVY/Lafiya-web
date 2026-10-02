@@ -145,6 +145,7 @@ describe("runtime configuration matrix", () => {
         mode: "live",
         contractConfigured: true,
         protocolConfigured: true,
+        approvedWasmHashes: [],
       },
       payoutIndexer: { enabled: false },
       sentry: { enabled: true },
@@ -152,6 +153,20 @@ describe("runtime configuration matrix", () => {
     expect(JSON.stringify(config)).not.toContain(
       "managed-signing-key-reference",
     );
+  });
+
+  it("parses the approved attestation WASM hash allowlist (issue #629)", () => {
+    const hash = "A".repeat(64);
+    expect(
+      getRuntimeConfig(
+        productionEnv({ ATTESTATION_APPROVED_WASM_HASHES: ` ${hash}, ` }),
+      ).attestation.approvedWasmHashes,
+    ).toEqual(["a".repeat(64)]);
+    expect(() =>
+      getRuntimeConfig(
+        productionEnv({ ATTESTATION_APPROVED_WASM_HASHES: "not-a-hash" }),
+      ),
+    ).toThrow("APPROVED_WASM_HASH_INVALID");
   });
 });
 
