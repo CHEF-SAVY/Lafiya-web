@@ -11,6 +11,7 @@ import { validateAttestation } from "@/lib/stellar/attestation";
 import { sessionIdFromAccessToken } from "@/lib/sessions/throttle";
 import { coarseUserAgent } from "@/lib/sessions/user-agent";
 import { getBaseUrl } from "@/lib/url/getBaseUrl";
+import { getAvatarSignedUrl } from "@/lib/storage/avatar";
 
 import { PreviewCardButton } from "./preview-card-button";
 import { DownloadCardButton } from "./download-card-button";
@@ -199,6 +200,15 @@ async function ProfileContent() {
         .order("issued_at", { ascending: false })
     : { data: null };
   const sessions = await loadSessions(supabase);
+
+  // Issue #528: resolve a signed URL for the avatar photo server-side.
+  // The owner is the authenticated user so authorization is established.
+  const signedPhotoUrl = profile?.photo_url
+    ? await getAvatarSignedUrl(profile.photo_url)
+    : null;
+
+  // Issue #531: fetch the guardian's dependant profiles.
+  const { data: dependants } = await supabase.rpc("get_my_dependants");
 
   return (
     <>

@@ -428,6 +428,50 @@ export type ConsentLogRow = {
   accepted_at: string;
 };
 
+// ---------------------------------------------------------------------------
+// Issue #531: Delegated caregiver model
+// ---------------------------------------------------------------------------
+
+/** Row shape of public.dependants. */
+export type DependantRow = {
+  id: string;
+  guardian_user_id: string;
+  name: string;
+  date_of_birth: string | null;
+  language: string | null;
+  blood_group: string | null;
+  genotype: string | null;
+  allergies: string[];
+  medications: string[];
+  chronic_conditions: string[];
+  emergency_contacts: EmergencyContact[];
+  card_public_id: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type GuardianshipRole = "primary" | "secondary";
+
+/** Row shape of public.guardianships. */
+export type GuardianshipRow = {
+  id: string;
+  guardian_id: string;
+  dependant_profile_id: string;
+  role: GuardianshipRole;
+  granted_at: string;
+  revoked_at: string | null;
+};
+
+/** Row shape of public.guardian_audit_log. */
+export type GuardianAuditLogRow = {
+  id: string;
+  actor_id: string;
+  subject_id: string;
+  action: string;
+  meta: Record<string, unknown>;
+  occurred_at: string;
+};
+
 /** Row shape of public.rate_limits. See lib/rate-limit.ts. */
 export type RateLimitRow = {
   key: string;
@@ -830,6 +874,33 @@ export type Database = {
         Update: Partial<Omit<ProtocolQuarantineRow, "id">>;
         Relationships: [];
       };
+      dependants: {
+        Row: DependantRow;
+        Insert: Pick<DependantRow, "guardian_user_id" | "name"> &
+          Partial<DependantRow>;
+        Update: Partial<Omit<DependantRow, "id" | "guardian_user_id">>;
+        Relationships: [];
+      };
+      guardianships: {
+        Row: GuardianshipRow;
+        Insert: Pick<
+          GuardianshipRow,
+          "guardian_id" | "dependant_profile_id"
+        > &
+          Partial<GuardianshipRow>;
+        Update: Partial<Omit<GuardianshipRow, "id">>;
+        Relationships: [];
+      };
+      guardian_audit_log: {
+        Row: GuardianAuditLogRow;
+        Insert: Pick<
+          GuardianAuditLogRow,
+          "actor_id" | "subject_id" | "action"
+        > &
+          Partial<GuardianAuditLogRow>;
+        Update: never;
+        Relationships: [];
+      };
     };
     Views: {
       payout_obligation_reconciliation: {
@@ -1102,6 +1173,47 @@ export type Database = {
       quarantine_protocol_event: {
         Args: { p_stream: string; p_event_id: string; p_reason_code: string };
         Returns: number;
+      };
+      can_manage_profile: {
+        Args: { p_dependant_id: string };
+        Returns: boolean;
+      };
+      create_dependant: {
+        Args: {
+          p_name: string;
+          p_date_of_birth?: string | null;
+          p_language?: string | null;
+          p_blood_group?: string | null;
+          p_genotype?: string | null;
+          p_allergies?: string[];
+          p_medications?: string[];
+          p_chronic_conditions?: string[];
+          p_emergency_contacts?: Record<string, unknown>[];
+        };
+        Returns: DependantRow;
+      };
+      update_dependant: {
+        Args: {
+          p_dependant_id: string;
+          p_name?: string | null;
+          p_date_of_birth?: string | null;
+          p_language?: string | null;
+          p_blood_group?: string | null;
+          p_genotype?: string | null;
+          p_allergies?: string[] | null;
+          p_medications?: string[] | null;
+          p_chronic_conditions?: string[] | null;
+          p_emergency_contacts?: Record<string, unknown>[] | null;
+        };
+        Returns: DependantRow;
+      };
+      delete_dependant: {
+        Args: { p_dependant_id: string };
+        Returns: undefined;
+      };
+      get_my_dependants: {
+        Args: Record<string, never>;
+        Returns: DependantRow[];
       };
     };
     Enums: {

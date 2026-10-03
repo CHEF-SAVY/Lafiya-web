@@ -12,6 +12,7 @@ import { logError } from "@/lib/logging/logger";
 import { isAttestationTrustDegraded } from "@/lib/stellar/verification-indexer/trust-state";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { getAvatarSignedUrl } from "@/lib/storage/avatar";
 
 import { EmergencyCardContent } from "../../[id]/card-content";
 import { ExpiredCapabilityState } from "./expired-state";
