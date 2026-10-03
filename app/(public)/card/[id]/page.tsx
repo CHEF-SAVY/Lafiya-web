@@ -2,7 +2,10 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { after } from "next/server";
 
+import { withholdPinGatedFields } from "@/lib/emergency/card-pin";
+import { getLegacyPinGatedFields } from "@/lib/emergency/card-pin-gate";
 import { logError } from "@/lib/logging/logger";
+import { isAttestationTrustDegraded } from "@/lib/stellar/verification-indexer/trust-state";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { getAvatarSignedUrl } from "@/lib/storage/avatar";
@@ -88,6 +91,12 @@ export default async function PublicCardPage({
     notFound();
   }
 
+  // Issue #631: legacy links have no PIN, so PIN-gated fields never render.
+  const card = withholdPinGatedFields(
+    data[0],
+    await getLegacyPinGatedFields(id),
+  );
+
   after(async () => {
     try {
       await createAdminClient().rpc("record_legacy_card_access_event", {
@@ -140,7 +149,11 @@ export default async function PublicCardPage({
         </a>
       </header>
       <EmergencyCardContent
-        card={data[0]}
+        card={
+          (await isAttestationTrustDegraded())
+            ? { ...card, trust_state: "unavailable" as const }
+            : card
+        }
         authorizationKind="legacy"
         isOwner={isOwner}
         signedPhotoUrl={signedPhotoUrl}

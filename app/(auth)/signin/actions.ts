@@ -1,8 +1,17 @@
 "use server";
 
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 
+import {
+  SIGN_IN_FAILED_MESSAGE,
+  signInLockedOutMessage,
+} from "@/lib/auth/messages";
+import {
+  SIGN_IN_TIMING_FLOOR_MS,
+  withTimingFloor,
+} from "@/lib/security/timing";
 import { createClient } from "@/lib/supabase/server";
 import {
   checkRateLimit,
@@ -10,6 +19,8 @@ import {
   recordSuccess,
   getClientIp,
 } from "@/lib/rate-limit";
+import { logError } from "@/lib/logging/logger";
+import { coarseUserAgent } from "@/lib/sessions/user-agent";
 import { formatZodError } from "@/lib/validation/zod";
 
 const signInSchema = z.object({
@@ -46,11 +57,23 @@ export interface SignInState {
  * - Lockouts use a clear, non-enumerating message showing the remaining seconds.
  * - Non-rate-limit authentication failures return a generic "Incorrect email or password."
  *   to avoid revealing email existence.
+ *
+ * Account enumeration (#527): the body and redirect depend only on whether
+ * the credentials are correct, never on whether the email has an account.
+ * Every attempt, including a successful one whose redirect() throws, takes
+ * at least SIGN_IN_TIMING_FLOOR_MS, so the bcrypt work Supabase does only
+ * for existing accounts is not observable as a timing difference.
  */
 export async function signIn(
   _prevState: SignInState | undefined,
   formData: FormData,
 ): Promise<SignInState> {
+  return withTimingFloor(SIGN_IN_TIMING_FLOOR_MS, () =>
+    attemptSignIn(formData),
+  );
+}
+
+async function attemptSignIn(formData: FormData): Promise<SignInState> {
   const rawEmail = formData.get("email");
   const emailInput = typeof rawEmail === "string" ? rawEmail.trim() : rawEmail;
 
@@ -72,9 +95,7 @@ export async function signIn(
   // Check if current client + email combination is locked out
   const limitCheck = await checkRateLimit(rateLimitKey);
   if (!limitCheck.allowed) {
-    return {
-      error: `Too many failed sign-in attempts. Please try again in ${limitCheck.secondsRemaining} seconds.`,
-    };
+    return { error: signInLockedOutMessage(limitCheck.secondsRemaining) };
   }
 
   const supabase = await createClient();
@@ -89,10 +110,25 @@ export async function signIn(
   if (error) {
     // Record failure to increment failed attempts and trigger lockout if limit reached
     await recordFailure(rateLimitKey);
-    return { error: "Incorrect email or password." };
+    return { error: SIGN_IN_FAILED_MESSAGE };
   }
 
   // Clear failed attempts on successful sign-in
   await recordSuccess(rateLimitKey);
+
+  // Record the new session for the sessions panel (#523). The client now
+  // carries the fresh session, so touch_my_session() reads its id from the
+  // verified JWT. This is best effort: sign-in must not fail on it.
+  const { browser, os } = coarseUserAgent((await headers()).get("user-agent"));
+  const { error: sessionError } = await supabase.rpc("touch_my_session", {
+    p_browser: browser,
+    p_os: os,
+  });
+  if (sessionError) {
+    logError("Failed to record session metadata", sessionError, {
+      route: "/signin (action: signIn)",
+    });
+  }
+
   redirect("/profile");
 }
