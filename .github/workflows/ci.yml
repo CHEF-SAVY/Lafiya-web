@@ -44,6 +44,26 @@ jobs:
       - name: Verify no client bundle leaks
         run: node scripts/check-client-bundles.js
 
+  database-security:
+    name: Database schema drift and RLS gates
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3
+      - run: supabase start
+      - run: supabase db reset
+      - run: npm run db:drift
+      - run: npm run db:audit-rls
+      - run: supabase stop
+        if: always()
+
   integration:
     name: Integration tests (local Supabase)
     runs-on: ubuntu-latest

@@ -37,7 +37,9 @@
     "ci:check-action-pins": "node scripts/check-action-pins.mjs",
     "ci:check-clean-worktree": "node scripts/check-clean-worktree.mjs",
     "sbom": "node scripts/generate-sbom.mjs",
-    "release:verify-gate": "node scripts/verify-release-gate.mjs"
+    "release:verify-gate": "node scripts/verify-release-gate.mjs",
+    "db:audit-rls": "node scripts/audit-rls.mjs",
+    "db:drift": "node scripts/check-schema-drift.mjs"
   },
   "dependencies": {
     "@sentry/nextjs": "^11.1.0",
