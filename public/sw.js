@@ -1,20 +1,27 @@
-// Lafiya emergency-card offline protocol (envelope v1).
+// Lafiya emergency-card offline protocol (envelope v1, encrypted at rest v2).
 //
 // We intentionally cache a structured, versioned projection rather than the
 // rendered HTML. Offline presentation therefore cannot accidentally inherit a
 // live-looking verification badge, stale scripts, or an old route layout.
+// Envelopes are AES-GCM encrypted under a key derived from the card URL's
+// secret segment and stored under an opaque hashed key (issue #630, ADR-004).
 
 import {
   CARD_CACHE_LIMITS,
+  cardSecretFromUrl,
   createOfflineEnvelope,
+  decryptOfflineEnvelope,
+  encryptOfflineEnvelope,
   enforceCacheBudget,
+  offlineCacheKey,
   offlineEnvelopeResponse,
   renderOfflineEnvelope,
   validateOfflineEnvelope,
   withEntryMetaHeaders,
 } from "./offline-cache-helpers.js";
 
-const CARD_CACHE = "lafiya-emergency-envelopes-v1";
+// v2: encrypted envelopes. Activation deletes the v1 plaintext cache.
+const CARD_CACHE = "lafiya-emergency-envelopes-v2";
 const CARD_PATH_PREFIX = "/card/";
 
 self.addEventListener("install", () => self.skipWaiting());
@@ -55,8 +62,11 @@ async function withCacheLock(name, fn) {
   return fn();
 }
 
-async function storeEnvelope(request, envelope) {
-  const response = offlineEnvelopeResponse(envelope);
+async function storeEnvelope(cacheKey, envelope, secret) {
+  const record = await encryptOfflineEnvelope(envelope, secret, cacheKey);
+  if (!record) return false;
+  const request = new Request(new URL(cacheKey, self.location.origin));
+  const response = offlineEnvelopeResponse(record);
   const bytes = new Uint8Array(await response.clone().arrayBuffer());
   return withCacheLock(CARD_CACHE, async () => {
     const cache = await caches.open(CARD_CACHE);
@@ -80,6 +90,11 @@ async function storeEnvelope(request, envelope) {
 
 async function handleCardNavigation(event) {
   const request = event.request;
+  const secret = cardSecretFromUrl(request.url);
+  const cacheKey = secret ? await offlineCacheKey(request.url) : null;
+  const cacheRequest = cacheKey
+    ? new Request(new URL(cacheKey, self.location.origin))
+    : null;
   try {
     const networkResponse = await fetch(request);
     if (!networkResponse.ok) return networkResponse;
@@ -88,25 +103,27 @@ async function handleCardNavigation(event) {
       await networkResponse.clone().text(),
       new Date().toISOString(),
     );
+    if (!cacheRequest) return networkResponse;
     const cache = await caches.open(CARD_CACHE);
     if (envelope) {
-      await storeEnvelope(request, envelope);
+      await storeEnvelope(cacheKey, envelope, secret);
     } else {
       // Consent withdrawal, malformed source, unsupported envelope version,
       // and unavailable cards remove any prior local copy at next contact.
-      await cache.delete(request);
+      await cache.delete(cacheRequest);
     }
     return networkResponse;
   } catch {
     const cache = await caches.open(CARD_CACHE);
-    const cached = await cache.match(request);
-    const envelope = cached ? await cached.json().catch(() => null) : null;
+    const cached = cacheRequest ? await cache.match(cacheRequest) : undefined;
+    const record = cached ? await cached.json().catch(() => null) : null;
+    const envelope = await decryptOfflineEnvelope(record, secret, cacheKey);
     const validation = await validateOfflineEnvelope(
       envelope,
       new Date().toISOString(),
     );
     if (!validation.valid) {
-      if (cached) event.waitUntil(cache.delete(request));
+      if (cached) event.waitUntil(cache.delete(cacheRequest));
       return new Response(renderOfflineEnvelope(null, validation.reason), {
         status: 200,
         headers: { "Content-Type": "text/html; charset=utf-8" },

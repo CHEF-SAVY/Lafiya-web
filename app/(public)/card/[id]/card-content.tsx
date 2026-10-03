@@ -1,6 +1,7 @@
 import { parsePhoneNumberFromString } from "libphonenumber-js";
 import Image from "next/image";
 import Link from "next/link";
+import type { ReactNode } from "react";
 
 import { formatDateTime } from "@/lib/format/datetime";
 import { OfflineEnvelopeSource } from "@/lib/emergency/offline-source";
@@ -9,8 +10,10 @@ import type { EmergencyCardRow } from "@/lib/supabase/types";
 import { NotifyContactsForm } from "../c/[token]/notify-contacts-form";
 import { VerifiedBadge, type VerificationStatus } from "./verified-badge";
 
-function formatList(values: string[] | null): string {
-  if (values === null) return "Withheld by patient";
+function formatList(values: string[] | null, pinRequired = false): string {
+  if (values === null) {
+    return pinRequired ? "Requires the card PIN" : "Withheld by patient";
+  }
   return values.length > 0 ? values.join(", ") : "None recorded";
 }
 
@@ -78,8 +81,9 @@ const actionButtonClassName =
 export function EmergencyCardContent({
   card,
   authorizationKind,
+  pinGate,
   isOwner = false,
-  capabilityToken,
+  signedPhotoUrl,
 }: {
   card: EmergencyCardRow;
   authorizationKind: "legacy" | "capability";
@@ -88,11 +92,8 @@ export function EmergencyCardContent({
    * user_id to the client (get_emergency_card deliberately never returns
    * it). Never trust this from anywhere but a server-side check. */
   isOwner?: boolean;
-  /** Issue #542: the raw capability token, passed only by the /card/c/[token]
-   * route (never by the legacy /card/[id] route, which has no capability to
-   * re-check proof-of-presence against). Used solely to let the responder
-   * trigger notify_emergency_contacts(); never persisted here. */
-  capabilityToken?: string;
+  /** Issue #631: the PIN entry form, shown when fields are PIN-gated. */
+  pinGate?: ReactNode;
 }) {
   const status: VerificationStatus =
     card.trust_state === "unverified"
@@ -153,13 +154,16 @@ export function EmergencyCardContent({
           aria-labelledby="identity-heading"
           className="flex items-center gap-4"
         >
-          {card.photo_url ? (
+          {signedPhotoUrl ? (
             <Image
-              src={card.photo_url}
+              src={signedPhotoUrl}
               alt=""
               width={80}
               height={80}
               sizes="80px"
+              // Issue #528: signed URLs change per-request; disable Next.js
+              // image optimization so the optimizer never caches or rewrites them.
+              unoptimized
               className="h-20 w-20 rounded-full object-cover"
             />
           ) : null}
@@ -222,13 +226,21 @@ export function EmergencyCardContent({
           <CardField label="Allergies" value={formatList(card.allergies)} />
           <CardField
             label="Current medications"
-            value={formatList(card.medications)}
+            value={formatList(
+              card.medications,
+              card.disclosure_states?.medications === "pin_required",
+            )}
           />
           <CardField
             label="Chronic conditions / implants"
-            value={formatList(card.chronic_conditions)}
+            value={formatList(
+              card.chronic_conditions,
+              card.disclosure_states?.chronic_conditions === "pin_required",
+            )}
           />
         </section>
+
+        {pinGate}
 
         {card.emergency_contacts === null ? (
           <CardField label="Emergency contacts" value="Withheld by patient" />

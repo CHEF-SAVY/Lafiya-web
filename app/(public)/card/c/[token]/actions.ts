@@ -1,81 +1,93 @@
 "use server";
 
+import { cookies } from "next/headers";
+import { notFound, redirect } from "next/navigation";
+
 import {
   digestCapability,
   isCapabilityToken,
 } from "@/lib/emergency/capability";
-import { sendEmergencyContactNotification } from "@/lib/emergency/notify-contacts";
+import {
+  CARD_PIN_COOKIE,
+  CARD_PIN_PATTERN,
+  CARD_PIN_UNLOCK_SECONDS,
+  createUnlockToken,
+  digestUnlockToken,
+  verifyCardPin,
+} from "@/lib/emergency/card-pin";
 import { logError } from "@/lib/logging/logger";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
-export type NotifyContactsState = {
-  status?: "sent" | "error";
-  error?: string;
-};
+type PinOutcome = "pin_success" | "pin_failure" | "pin_locked";
 
-const REASON_MESSAGES: Record<string, string> = {
-  NOT_OPTED_IN: "This patient has not opted in to emergency contact notifications.",
-  RATE_LIMITED:
-    "A notification was already sent recently for this card. Please wait before sending another.",
-  PRESENCE_REQUIRED: "Please reload this card, then try again.",
-  NO_CONTACTS: "No emergency contacts are available for this patient.",
-  INVALID_INPUT: "Facility name is too long.",
-  NOT_FOUND: "This link is no longer valid.",
-};
+async function recordPinEvent(capabilityId: string, outcome: PinOutcome) {
+  try {
+    await createAdminClient().rpc("record_card_access_event", {
+      p_capability_id: capabilityId,
+      p_access_kind: "capability",
+      p_outcome: outcome,
+    });
+  } catch (error) {
+    logError("Failed to record card PIN access event", error, {
+      route: "/card/c/[token] (action: submitCardPin)",
+    });
+  }
+}
 
 /**
- * Issue #542: server action behind the responder-facing "Notify emergency
- * contacts" button. All abuse/consent gating (proof-of-presence, patient
- * opt-in, and the 30-minute rate limit) is enforced server-side inside the
- * notify_emergency_contacts() RPC, not here -- this action only shapes the
- * form input/output and calls the (currently stubbed) send function.
+ * Issue #631: verifies the printed card PIN. A plain POST form (no JS
+ * needed). Each attempt is reserved in the database before the hash is
+ * checked, so at most five wrong PINs can be tried per capability. A correct
+ * PIN sets a 15-minute, httpOnly unlock cookie scoped to this card path;
+ * only its digest is stored.
  */
-export async function notifyEmergencyContacts(
-  _previous: NotifyContactsState | undefined,
-  formData: FormData,
-): Promise<NotifyContactsState> {
-  void _previous;
+export async function submitCardPin(formData: FormData): Promise<void> {
   const token = formData.get("token");
-  if (typeof token !== "string" || !isCapabilityToken(token)) {
-    return { status: "error", error: "This link is no longer valid." };
+  const pin = formData.get("pin");
+  if (typeof token !== "string" || !isCapabilityToken(token)) notFound();
+  const path = `/card/c/${token}`;
+  if (typeof pin !== "string" || !CARD_PIN_PATTERN.test(pin)) {
+    redirect(`${path}?pin=invalid`);
   }
 
-  const facilityNameRaw = formData.get("facilityName");
-  const facilityName =
-    typeof facilityNameRaw === "string" && facilityNameRaw.trim()
-      ? facilityNameRaw.trim().slice(0, 120)
-      : null;
-
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .rpc("notify_emergency_contacts", {
-      p_token_digest: digestCapability(token),
-      p_facility_name: facilityName,
-    })
-    .single();
-
-  if (error) {
-    logError("Failed to notify emergency contacts", error, {
-      route: "/card/c/[token] (action: notifyEmergencyContacts)",
-    });
-    return {
-      status: "error",
-      error: "Something went wrong. Please try again.",
-    };
-  }
-
-  if (!data.allowed || !data.contacts) {
-    return {
-      status: "error",
-      error: REASON_MESSAGES[data.reason] ?? "This link is no longer valid.",
-    };
-  }
-
-  await sendEmergencyContactNotification({
-    contacts: data.contacts,
-    patientFirstName: data.patient_first_name,
-    facilityName,
+  const admin = createAdminClient();
+  const { data, error } = await admin.rpc("begin_card_pin_attempt", {
+    p_token_digest: digestCapability(token),
   });
+  if (error) {
+    logError("Failed to start card PIN attempt", new Error("PIN_UNAVAILABLE"), {
+      route: "/card/c/[token] (action: submitCardPin)",
+    });
+    redirect(`${path}?pin=unavailable`);
+  }
+  const attempt = data?.[0];
+  if (!attempt) redirect(path);
+  if (!attempt.allowed || !attempt.pin_hash) {
+    await recordPinEvent(attempt.capability_id, "pin_locked");
+    redirect(`${path}?pin=locked`);
+  }
 
-  return { status: "sent" };
+  if (!(await verifyCardPin(pin, attempt.pin_hash))) {
+    await recordPinEvent(attempt.capability_id, "pin_failure");
+    redirect(`${path}?pin=invalid`);
+  }
+
+  const unlockToken = createUnlockToken();
+  const { error: unlockError } = await admin.rpc("complete_card_pin_success", {
+    p_capability_id: attempt.capability_id,
+    p_unlock_digest: digestUnlockToken(unlockToken),
+    p_unlock_expires_at: new Date(
+      Date.now() + CARD_PIN_UNLOCK_SECONDS * 1000,
+    ).toISOString(),
+  });
+  if (unlockError) redirect(`${path}?pin=unavailable`);
+  (await cookies()).set(CARD_PIN_COOKIE, unlockToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    path,
+    maxAge: CARD_PIN_UNLOCK_SECONDS,
+  });
+  await recordPinEvent(attempt.capability_id, "pin_success");
+  redirect(path);
 }
