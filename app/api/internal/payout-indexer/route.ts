@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { serverEnv } from "@/lib/env-server";
 import { getRuntimeConfig } from "@/lib/runtime-config";
+import { verifyBearer } from "@/lib/security/bearer";
 import { PayoutIndexer } from "@/lib/stellar/payout-indexer/indexer";
 import {
   HorizonPayoutSource,
@@ -20,6 +21,7 @@ function configured() {
     ATTESTATION_CONTRACT_ID,
     CHW_INCENTIVE_POOL_ADDRESS,
     PAYOUT_INDEXER_CRON_SECRET,
+    PAYOUT_INDEXER_CRON_SECRET_PREVIOUS,
     PAYOUT_INDEXER_START_LEDGER,
     SOROBAN_RPC_URL,
     STELLAR_HORIZON_URL,
@@ -39,7 +41,10 @@ function configured() {
   return {
     contractId: ATTESTATION_CONTRACT_ID,
     poolAddress: CHW_INCENTIVE_POOL_ADDRESS,
-    cronSecret: PAYOUT_INDEXER_CRON_SECRET,
+    cronSecrets: [
+      PAYOUT_INDEXER_CRON_SECRET,
+      PAYOUT_INDEXER_CRON_SECRET_PREVIOUS,
+    ].filter((secret): secret is string => Boolean(secret)),
     startLedger: PAYOUT_INDEXER_START_LEDGER,
     rpcUrl: SOROBAN_RPC_URL,
     horizonUrl: STELLAR_HORIZON_URL,
@@ -56,7 +61,7 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
-  if (request.headers.get("authorization") !== `Bearer ${config.cronSecret}`) {
+  if (!verifyBearer(request, config.cronSecrets)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
