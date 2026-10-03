@@ -2,6 +2,7 @@
 
 import { useActionState, useEffect, useRef, useState } from "react";
 
+import { IdempotencyKeyInputClient } from "@/lib/idempotency/IdempotencyKeyInputClient";
 import { regenerateCardId } from "./actions";
 import { StepUpChallenge } from "./step-up-challenge";
 
@@ -34,7 +35,8 @@ export function RegenerateCardButton() {
         ref={dialogRef}
         className="w-full max-w-sm rounded-xl border border-zinc-300 bg-white p-6 text-zinc-950 backdrop:bg-black/40 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
       >
-        <form ref={formRef} action={formAction}>
+        <form action={formAction}>
+          <IdempotencyKeyInputClient />
           <h2 className="text-lg font-semibold">Regenerate QR code?</h2>
           <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
             This will immediately invalidate your current QR code and card link.

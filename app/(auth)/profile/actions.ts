@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { createHash } from "node:crypto";
 
 import { deleteAccountAndData } from "@/lib/account/deleteAccount";
-import { needsStepUp, STEP_UP_REQUIRED } from "@/lib/auth/assurance";
+import { syncBlockingKeys } from "@/lib/account/duplicates";
 import {
   ensureRecordSecret,
   secretExistsByUserId,
@@ -15,6 +15,11 @@ import {
   digestCapability,
   EMERGENCY_FIELD_ALLOWLIST,
 } from "@/lib/emergency/capability";
+import {
+  generateCardPin,
+  hashCardPin,
+  PIN_GATEABLE_FIELDS,
+} from "@/lib/emergency/card-pin";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type { ProfileRow } from "@/lib/supabase/types";
@@ -27,8 +32,10 @@ import {
   normalizeEmergencyRecord,
 } from "@/lib/records/canonicalization";
 
+import { serverEnv } from "@/lib/env-server";
 import { logError } from "@/lib/logging/logger";
 import { getBaseUrl } from "@/lib/url/getBaseUrl";
+import { withIdempotency } from "@/lib/idempotency/withIdempotency";
 
 export interface ProfileFormState {
   error?: string;
@@ -47,6 +54,8 @@ export type CapabilityShareState = {
   error?: string;
   capabilityUrl?: string;
   expiresAt?: string;
+  /** Issue #631: shown once for printing; only its hash is stored. */
+  cardPin?: string;
 };
 
 /**
@@ -57,32 +66,63 @@ export type CapabilityShareState = {
  */
 export async function createEmergencyCapability(
   _previous: CapabilityShareState | undefined,
-  _formData: FormData,
+  formData: FormData,
 ): Promise<CapabilityShareState> {
   void _previous;
-  void _formData;
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { error: "You must be signed in." };
 
+  return withIdempotency(
+    { formData, action: "createEmergencyCapability" },
+    async () => {
+      return _createEmergencyCapabilityImpl(user.id);
+    },
+  );
+}
+
+async function _createEmergencyCapabilityImpl(
+  _userId: string,
+): Promise<CapabilityShareState> {
+  const supabase = await createClient();
   const rawCapability = createRawCapability();
   // Stay below the database's 180-day hard ceiling to tolerate small
   // application/database clock differences without weakening the policy.
   const expiresAt = new Date(
     Date.now() + 179 * 24 * 60 * 60 * 1000,
   ).toISOString();
-  const { error } = await supabase.rpc("create_emergency_capability", {
-    p_token_digest: digestCapability(rawCapability),
-    p_purpose: "emergency",
-    p_field_allowlist: EMERGENCY_FIELD_ALLOWLIST,
-    p_expires_at: expiresAt,
-    p_max_views: null,
-  });
-  if (error) {
+  const { data: capability, error } = await supabase.rpc(
+    "create_emergency_capability",
+    {
+      p_token_digest: digestCapability(rawCapability),
+      p_purpose: "emergency",
+      p_field_allowlist: EMERGENCY_FIELD_ALLOWLIST,
+      p_expires_at: expiresAt,
+      p_max_views: null,
+    },
+  );
+  if (error || !capability) {
     logError("Failed to issue emergency capability", error, {
       route: "/profile (action: createEmergencyCapability)",
+    });
+    return { error: "Could not create a new emergency QR. Please try again." };
+  }
+
+  // Issue #631: a fresh printed PIN per card rotation. A card without its
+  // PIN would lock the patient's sensitive fields, so revoke it on failure.
+  const cardPin = generateCardPin();
+  const { error: pinError } = await createAdminClient().rpc("set_card_pin", {
+    p_capability_id: capability.id,
+    p_pin_hash: await hashCardPin(cardPin),
+  });
+  if (pinError) {
+    logError("Failed to store card PIN", pinError, {
+      route: "/profile (action: createEmergencyCapability)",
+    });
+    await supabase.rpc("revoke_emergency_capability", {
+      p_capability_id: capability.id,
     });
     return { error: "Could not create a new emergency QR. Please try again." };
   }
@@ -91,6 +131,7 @@ export async function createEmergencyCapability(
   return {
     capabilityUrl: `${await getBaseUrl()}/card/c/${rawCapability}`,
     expiresAt,
+    cardPin,
   };
 }
 
@@ -303,8 +344,7 @@ function getEmergencyContacts(formData: FormData): unknown[] {
 export async function regenerateCardId(
   _prevState: { error?: string; code?: typeof STEP_UP_REQUIRED } | undefined,
   formData: FormData,
-): Promise<{ error?: string; code?: typeof STEP_UP_REQUIRED }> {
-  void formData;
+): Promise<{ error?: string }> {
   const supabase = await createClient();
   const {
     data: { user },
@@ -314,41 +354,41 @@ export async function regenerateCardId(
     return { error: "You must be signed in." };
   }
 
-  // Issue #522: regenerating the card id immediately invalidates the old
-  // one -- a stolen session shouldn't be able to invalidate a patient's
-  // live emergency-card link (a denial-of-service against their own
-  // emergency access) without a step-up challenge if MFA is enrolled.
-  if (await needsStepUp(supabase, "aal2")) {
-    return {
-      error: "Additional verification is required to regenerate your QR code.",
-      code: STEP_UP_REQUIRED,
-    };
-  }
+  return withIdempotency(
+    {
+      formData,
+      action: "regenerateCardId",
+      // The card_public_id written to the DB is generated server-side, so
+      // the only meaningful payload field is the user's intent (the form
+      // itself has no variable fields beyond the idempotency key).
+    },
+    async () => {
+      const { data: current } = await supabase
+        .from("profiles")
+        .select("card_public_id")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      const newId = crypto.randomUUID();
 
-  const { data: current } = await supabase
-    .from("profiles")
-    .select("card_public_id")
-    .eq("user_id", user.id)
-    .maybeSingle();
-  const newId = crypto.randomUUID();
+      const { error } = await supabase
+        .from("profiles")
+        .update({ card_public_id: newId })
+        .eq("user_id", user.id);
 
-  const { error } = await supabase
-    .from("profiles")
-    .update({ card_public_id: newId })
-    .eq("user_id", user.id);
+      if (error) {
+        logError("Failed to regenerate card id", error, {
+          route: "/profile (action: regenerateCardId)",
+        });
+        return { error: "Could not regenerate your QR code. Please try again." };
+      }
 
-  if (error) {
-    logError("Failed to regenerate card id", error, {
-      route: "/profile (action: regenerateCardId)",
-    });
-    return { error: "Could not regenerate your QR code. Please try again." };
-  }
-
-  revalidatePath("/profile");
-  if (current?.card_public_id)
-    revalidatePath(`/card/${current.card_public_id}`);
-  revalidatePath(`/card/${newId}`);
-  return {};
+      revalidatePath("/profile");
+      if (current?.card_public_id)
+        revalidatePath(`/card/${current.card_public_id}`);
+      revalidatePath(`/card/${newId}`);
+      return {};
+    },
+  );
 }
 
 export async function recordConsentChoice(formData: FormData): Promise<void> {
@@ -399,7 +439,16 @@ export async function updateDisclosureChoices(
       formData.get(`field:${field}`) === "on";
   }
   fields.date_of_birth = false; // only derived age may ever be public
-  const policy: DisclosurePolicy = { version: 1, fields };
+  const requiresCardPin = PIN_GATEABLE_FIELDS.filter(
+    (field) => formData.get(`pin:${field}`) === "on",
+  );
+  const policy: DisclosurePolicy = {
+    version: 1,
+    fields,
+    ...(requiresCardPin.length > 0
+      ? { requires_card_pin: requiresCardPin }
+      : {}),
+  };
   const { error } = await supabase.rpc("update_disclosure_policy", {
     p_expected_revision_id: expected,
     p_disclosure_policy: policy,
@@ -553,6 +602,27 @@ export async function upsertProfile(
       code: "DATABASE",
       error: "Your record could not be saved. Please try again.",
     };
+  }
+
+  // Issue #628: refresh keyed duplicate-detection blocking keys. Best effort:
+  // a failure must never block saving emergency information.
+  if (serverEnv.ACCOUNT_LINKAGE_HMAC_SECRET) {
+    try {
+      await syncBlockingKeys(
+        createAdminClient(),
+        serverEnv.ACCOUNT_LINKAGE_HMAC_SECRET,
+        user.id,
+        {
+          phone: user.phone,
+          name: parsed.data.name,
+          dateOfBirth: parsed.data.dateOfBirth || null,
+        },
+      );
+    } catch (keyError) {
+      logError("Failed to sync duplicate-detection keys", keyError, {
+        route: "/profile (action: upsertProfile)",
+      });
+    }
   }
 
   const { data: updatedProfile } = await supabase

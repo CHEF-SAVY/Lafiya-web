@@ -54,13 +54,19 @@ export function deriveKeypairFromSeed(seed: Uint8Array): Keypair {
  * per-enrollment nonce (the nonce is what makes re-proofs fresh; the challenge
  * itself is not secret). Returns the UTF-8 challenge string the enrollee signs
  * via SEP-53 `signMessage`.
+ *
+ * The challenge is scoped to the organization the CHW is enrolling under so a
+ * proof captured for one tenant cannot be replayed to bind the same address
+ * under a different organization (issue #621 multi-tenant boundary).
  */
 export function createEnrollmentChallenge(
   chwUserId: string,
   nonce: string,
+  organizationId?: string,
 ): string {
+  const scope = organizationId ? `:${organizationId}` : "";
   const fingerprint = createHash("sha256")
-    .update(`lafiya-chw-bind:${chwUserId}:${nonce}`)
+    .update(`lafiya-chw-bind:${chwUserId}:${nonce}${scope}`)
     .digest("hex");
   return `Lafiya CHW enrollment — prove control of this Stellar address (challenge: ${fingerprint})`;
 }
@@ -124,6 +130,13 @@ export type AttestSigningParams = {
   timestamp: number;
   /** Source account sequence. "0" is fine for a PoC that never submits. */
   sequence?: string;
+  /**
+   * Organization (facility/NGO) the attestation is attributed to. Scopes the
+   * signed payload to a single tenant so an attestation cannot be replayed
+   * across organizations (issue #621). Optional for backward compatibility
+   * with the default organization.
+   */
+  organizationId?: string;
 };
 
 export type SignedAttestTransaction = {
