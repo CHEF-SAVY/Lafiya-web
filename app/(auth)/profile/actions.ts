@@ -391,6 +391,28 @@ export async function regenerateCardId(
   );
 }
 
+/**
+ * Issue #537: audit-trail entry for a Web NFC card-link write. Records only
+ * the outcome, never the capability URL/token itself — the URL is the
+ * bearer secret and must not be persisted or sent to telemetry (see
+ * lib/logging/logger.ts's Hard Rule).
+ */
+export async function logNfcCardWrite(
+  outcome: "success" | "error",
+): Promise<void> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return;
+
+  logInfo("Emergency card link written to NFC tag", {
+    route: "/profile (action: logNfcCardWrite)",
+    userId: user.id,
+    outcome,
+  });
+}
+
 export async function recordConsentChoice(formData: FormData): Promise<void> {
   const supabase = await createClient();
   const {

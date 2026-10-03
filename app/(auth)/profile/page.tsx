@@ -253,6 +253,7 @@ async function ProfileContent() {
             />
           </div>
           <ProfileCompleteness profile={profile} />
+          <WallpaperGenerator />
         </>
       ) : null}
 

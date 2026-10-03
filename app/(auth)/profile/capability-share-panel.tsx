@@ -145,7 +145,10 @@ export function CapabilitySharePanel({
 
       {activeCapabilities.length > 0 ? (
         <div>
-          <h3 className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+          <h3
+            id="active-shares-heading"
+            className="text-sm font-medium text-zinc-800 dark:text-zinc-200"
+          >
             Active shares
           </h3>
           <ul className="mt-2 flex flex-col gap-2">
@@ -210,8 +213,13 @@ export function CapabilitySharePanel({
           <p className="max-w-full text-xs break-all text-zinc-400 dark:text-zinc-500">
             {state.capabilityUrl}
           </p>
-          <div className="flex gap-3">
+          <WalletPassButtons capabilityUrl={state.capabilityUrl} />
+          <div className="flex flex-wrap justify-center gap-3">
             <CopyLinkButton text={state.capabilityUrl} />
+            <NfcWriteButton
+              cardUrl={state.capabilityUrl}
+              revokeHref="#active-shares-heading"
+            />
             {qrDataUrl ? (
               <a
                 href={qrDataUrl}

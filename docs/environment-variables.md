@@ -130,6 +130,31 @@ Opt-in outside production. The `SENTRY_ENABLED` flag and DSN values must be cons
 
 ---
 
+## Apple/Google Wallet passes (optional — not yet functional)
+
+Signing credentials for the "Add to Wallet" emergency-card pass (issue
+#538). See [`docs/wallet-passes.md`](./wallet-passes.md) for what each value
+is, how to obtain it, and current implementation status. Unlike the groups
+above, these are **not** validated by `lib/runtime-config.ts` at process
+startup — the feature is fully optional, so an unconfigured deployment must
+keep booting. They are instead validated by `lib/wallet-passes/config.ts`
+only when `/api/wallet/apple` or `/api/wallet/google` is called, which
+returns HTTP 501 if any variable for that platform is missing.
+
+| Variable | Required | Exposed to browser | Purpose |
+|---|---|---|---|
+| `APPLE_WALLET_SIGNER_CERT_BASE64` | Conditional | **No — secret** | Base64 PEM of the Apple Pass Type ID certificate. |
+| `APPLE_WALLET_SIGNER_KEY_BASE64` | Conditional | **No — secret** | Base64 PEM of the matching private key. |
+| `APPLE_WALLET_SIGNER_KEY_PASSPHRASE` | Optional | **No — secret** | Passphrase for the private key, if encrypted. |
+| `APPLE_WALLET_WWDR_CERT_BASE64` | Conditional | No | Base64 PEM of Apple's WWDR intermediate certificate. |
+| `APPLE_WALLET_PASS_TYPE_IDENTIFIER` | Conditional | No | Registered Pass Type ID, e.g. `pass.xyz.lafiya.emergency`. |
+| `APPLE_WALLET_TEAM_IDENTIFIER` | Conditional | No | Apple Developer Team ID. |
+| `GOOGLE_WALLET_SERVICE_ACCOUNT_JSON` | Conditional | **No — secret** | Full Google Cloud service-account key JSON. |
+| `GOOGLE_WALLET_ISSUER_ID` | Conditional | No | Google Wallet issuer account ID. |
+| `GOOGLE_WALLET_CLASS_ID` | Conditional | No | ID of the generic pass class created via the Wallet Objects API. |
+
+---
+
 ## Minimum `.env.local` for local UI development
 
 ```env
