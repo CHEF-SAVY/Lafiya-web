@@ -103,6 +103,19 @@ All-or-nothing group: set `PAYOUT_INDEXER_ENABLED=true` only when every variable
 
 ---
 
+## Client IP resolution / rate-limit garbage collection (optional)
+
+See `lib/rate-limit.ts` (`getClientIp`) and
+`supabase/migrations/20260929210000_rate_and_frequency_limits_gc.sql`.
+
+| Variable | Required | Exposed to browser | Purpose | Example / placeholder |
+|---|---|---|---|---|
+| `TRUSTED_PROXY_HOPS` | Optional | No | How many reverse-proxy hops between the real client and this process are trusted to have appended (not replaced) an X-Forwarded-For entry. Only the entry this many positions in from the right is trusted. Defaults to `1`. | `1` |
+| `CLIENT_IP_HEADER` | Optional | No | Platform-injected header that is authoritative for the client IP when present (set/overwritten by the platform itself, so it cannot carry a client-supplied value). Defaults to Vercel's `x-vercel-forwarded-for`; override for other platforms, e.g. `cf-connecting-ip` on Cloudflare. | `x-vercel-forwarded-for` |
+| `PURGE_LIMITS_CRON_SECRET` | Optional | **No — secret** | Bearer token for the authenticated `POST /api/internal/purge-expired-limits` fallback endpoint, used only where the Postgres `pg_cron` extension is unavailable (e.g. most local/CI Supabase instances). A deployment whose Postgres has `pg_cron` schedules the purge automatically and never needs this. Minimum 32 characters if set. | _(generate with `openssl rand -hex 32`)_ |
+
+---
+
 ## Observability / Sentry (optional — required in production)
 
 Opt-in outside production. The `SENTRY_ENABLED` flag and DSN values must be consistent: enabling Sentry without a DSN, or setting a DSN without enabling Sentry, both fail at startup.

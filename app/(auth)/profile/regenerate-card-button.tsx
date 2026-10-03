@@ -1,9 +1,10 @@
 "use client";
 
-import { useActionState, useRef } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 
 import { IdempotencyKeyInputClient } from "@/lib/idempotency/IdempotencyKeyInputClient";
 import { regenerateCardId } from "./actions";
+import { StepUpChallenge } from "./step-up-challenge";
 
 export function RegenerateCardButton() {
   const [state, formAction, isPending] = useActionState(
@@ -11,6 +12,14 @@ export function RegenerateCardButton() {
     undefined,
   );
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    if (isPending) setDismissed(false);
+  }, [isPending]);
+
+  const stepUpRequired = state?.code === "STEP_UP_REQUIRED" && !dismissed;
 
   return (
     <>
@@ -59,6 +68,13 @@ export function RegenerateCardButton() {
           </div>
         </form>
       </dialog>
+
+      {stepUpRequired ? (
+        <StepUpChallenge
+          onVerified={() => formRef.current?.requestSubmit()}
+          onCancel={() => setDismissed(true)}
+        />
+      ) : null}
     </>
   );
 }

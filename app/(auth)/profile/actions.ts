@@ -41,7 +41,12 @@ export interface ProfileFormState {
   error?: string;
   errors?: Record<string, string>;
   success?: boolean;
-  code?: "STALE_REVISION" | "AUTH_REQUIRED" | "VALIDATION" | "DATABASE";
+  code?:
+    | "STALE_REVISION"
+    | "AUTH_REQUIRED"
+    | "VALIDATION"
+    | "DATABASE"
+    | typeof STEP_UP_REQUIRED;
   currentRevisionId?: string;
 }
 
@@ -209,7 +214,8 @@ function stableJson(value: unknown): string {
  * role key is used, so a user can never fetch another user's row.
  */
 export async function exportMyProfileData(): Promise<
-  { data: ProfileExport } | { error: string }
+  | { data: ProfileExport }
+  | { error: string; code?: typeof STEP_UP_REQUIRED }
 > {
   const supabase = await createClient();
 
@@ -220,6 +226,16 @@ export async function exportMyProfileData(): Promise<
 
   if (authError || !user) {
     return { error: "You must be signed in to export your data." };
+  }
+
+  // Issue #522: a full health-record export is exactly the kind of
+  // high-impact action a stolen session cookie should not be enough for --
+  // require a completed step-up challenge when MFA is enrolled.
+  if (await needsStepUp(supabase, "aal2")) {
+    return {
+      error: "Additional verification is required to export your data.",
+      code: STEP_UP_REQUIRED,
+    };
   }
 
   // Explicit column list rather than `select("*")`: `last_attested_hash` is
@@ -326,7 +342,7 @@ function getEmergencyContacts(formData: FormData): unknown[] {
 }
 
 export async function regenerateCardId(
-  _prevState: { error?: string } | undefined,
+  _prevState: { error?: string; code?: typeof STEP_UP_REQUIRED } | undefined,
   formData: FormData,
 ): Promise<{ error?: string }> {
   const supabase = await createClient();
@@ -635,6 +651,16 @@ export async function deleteAccount(
     return { error: "You must be signed in." };
   }
 
+  // Issue #522: a stolen session cookie alone must not be enough to delete
+  // the account -- if the user has MFA enrolled, the session must have
+  // actually completed a step-up challenge in this login.
+  if (await needsStepUp(supabase, "aal2")) {
+    return {
+      error: "Additional verification is required to delete your account.",
+      code: STEP_UP_REQUIRED,
+    };
+  }
+
   const confirm = formData.get("confirm")?.toString().trim();
   if (confirm !== "DELETE") {
     return { error: "Type DELETE to confirm." };
@@ -729,6 +755,7 @@ export type RepairSecretResult =
   | { status: "repaired" }
   | { status: "not_found" }
   | { status: "unauthorized" }
+  | { status: "step_up_required" }
   | { status: "error"; error: string };
 
 /**
@@ -751,6 +778,13 @@ export async function repairProfileSecret(): Promise<RepairSecretResult> {
 
   if (!user) {
     return { status: "unauthorized" };
+  }
+
+  // Issue #522: this repair path can provision a new record secret for the
+  // caller's profile -- the same "a stolen session shouldn't be enough"
+  // reasoning as the other high-impact actions in this file applies here.
+  if (await needsStepUp(supabase, "aal2")) {
+    return { status: "step_up_required" };
   }
 
   // Resolve the authenticated user's profile. RLS (eq(user_id)) ensures

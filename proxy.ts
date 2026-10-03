@@ -29,6 +29,14 @@ function getAdminRoles(user: { app_metadata?: Record<string, unknown> } | null) 
 }
 
 export async function proxy(request: NextRequest) {
+  // Issue #520: this is a high-frequency, unauthenticated, browser-fired
+  // endpoint -- it must never wait on (or be redirected by) the session
+  // check below, so it is excluded from the whole auth pipeline, not just
+  // the redirect logic.
+  if (request.nextUrl.pathname === CSP_REPORT_PATH) {
+    return NextResponse.next({ request });
+  }
+
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient<Database>(
@@ -94,9 +102,18 @@ export async function proxy(request: NextRequest) {
     response.headers.set("Referrer-Policy", "no-referrer");
     response.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
     response.headers.set("Cache-Control", "private, no-store, max-age=0");
+    // Issue #520: report-to (Reporting API v1, via Reporting-Endpoints)
+    // covers current browsers; report-uri stays alongside it for Safari,
+    // which has never implemented the Reporting API. Both point at the
+    // same PHI-safe-sampling endpoint.
+    const reportUri = new URL(CSP_REPORT_PATH, request.url).toString();
+    response.headers.set(
+      "Reporting-Endpoints",
+      `${CSP_REPORT_ENDPOINT_NAME}="${reportUri}"`,
+    );
     response.headers.set(
       "Content-Security-Policy",
-      "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; connect-src 'self'; img-src 'self' data: blob: https://*.supabase.co http://127.0.0.1:54321; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'",
+      `default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; connect-src 'self'; img-src 'self' data: blob: https://*.supabase.co http://127.0.0.1:54321; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; report-to ${CSP_REPORT_ENDPOINT_NAME}; report-uri ${reportUri}`,
     );
   }
   const isProtected = PROTECTED_PREFIXES.some(

@@ -99,6 +99,22 @@ const rawServerEnvSchema = z.object({
   SENTRY_DSN: optionalUrl,
   LAFIYA_BUILD_REVISION: optionalString,
   LAFIYA_SCHEMA_COMPATIBILITY: optionalString,
+  // Issue #517: how many reverse-proxy hops between the real client and
+  // this process are trusted to have appended (not replaced) an entry to
+  // X-Forwarded-For. Only the entry at that distance from the right is
+  // ours to trust -- everything to its left is attacker-controlled.
+  TRUSTED_PROXY_HOPS: z.coerce.number().int().positive().max(10).default(1),
+  // The platform-injected header that is authoritative for the client IP
+  // when present (it is set/overwritten by the platform itself, never by
+  // the original request), preferred over walking X-Forwarded-For at all.
+  // Defaults to Vercel's header since that is this app's deployment target;
+  // override for other platforms (e.g. "cf-connecting-ip" on Cloudflare).
+  CLIENT_IP_HEADER: optionalString,
+  // Issue #514: bearer secret for the POST /api/internal/purge-expired-limits
+  // fallback route, used by an external scheduler wherever pg_cron isn't
+  // available (see supabase/migrations/20260929210000_rate_and_frequency_limits_gc.sql).
+  // Optional -- a deployment whose Postgres does have pg_cron never needs it.
+  PURGE_LIMITS_CRON_SECRET: optionalString,
 });
 
 export type DeploymentEnvironment = z.infer<typeof deploymentSchema>;
@@ -350,6 +366,8 @@ export function getRuntimeConfig(
     SENTRY_DSN: env.SENTRY_DSN,
     LAFIYA_BUILD_REVISION: env.LAFIYA_BUILD_REVISION,
     LAFIYA_SCHEMA_COMPATIBILITY: env.LAFIYA_SCHEMA_COMPATIBILITY,
+    TRUSTED_PROXY_HOPS: env.TRUSTED_PROXY_HOPS,
+    CLIENT_IP_HEADER: env.CLIENT_IP_HEADER,
   });
   if (!parsed.success) {
     const missingOrInvalid = [

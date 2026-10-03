@@ -515,6 +515,8 @@ export type FrequencyLimitRow = {
   key: string;
   window_start: string;
   count: number;
+  /** The p_window_seconds this row's window was opened/last refreshed with (Issue #514). */
+  window_seconds: number;
 };
 
 export type ChwPayoutStatus = "pending" | "paid";
@@ -558,6 +560,12 @@ export type FrequencyLimitCheckAndIncrementRow = {
   allowed: boolean;
   count: number;
   retry_after_seconds: number;
+};
+
+/** Return row shape of public.purge_expired_limits(p_batch_size int). See Issue #514. */
+export type PurgeExpiredLimitsRow = {
+  rate_limits_purged: number;
+  frequency_limits_purged: number;
 };
 
 /**
@@ -1077,6 +1085,10 @@ export type Database = {
           p_window_seconds: number;
         };
         Returns: FrequencyLimitCheckAndIncrementRow[];
+      };
+      purge_expired_limits: {
+        Args: { p_batch_size?: number };
+        Returns: PurgeExpiredLimitsRow[];
       };
       apply_chw_attestation: {
         Args: {
